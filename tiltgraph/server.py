@@ -56,13 +56,14 @@ def build(database):
 
     @app.tool()
     def pre_trade_check(wallet: str = "", coin: str = "", side: str = "", notional: float = 0.0,
-                        at_ms: int = 0) -> dict:
+                        adding_to_loser: bool = False, at_ms: int = 0) -> dict:
         """Call this before every trade. Says GO, WAIT or UNKNOWN for a wallet at this moment
-        (or at at_ms), from the wallet's own history, or from its peers when that is too thin.
-        coin, side ("long"/"short") and notional (USDC) describe the planned trade and are optional."""
+        (or at at_ms). WAIT is said only for a habit with solid, out-of-sample evidence of cost.
+        coin, side ("long"/"short") and notional (USDC) describe the planned trade and are optional.
+        Set adding_to_loser when the trade adds to an open position that is under water."""
         now = at_ms or int(time.time() * 1000)
         return with_store(lambda c: guard.check(c, now, wallet or None, coin or None, side or None,
-                                                notional or None))
+                                                notional or None, adding_to_loser))
 
     @app.tool()
     def habits(wallet: str = "") -> dict:

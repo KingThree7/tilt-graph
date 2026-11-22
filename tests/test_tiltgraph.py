@@ -1,6 +1,6 @@
 import relate
 
-from tiltgraph import graph, guard, positions, report, sample
+from tiltgraph import graph, guard, positions, report, sample, study
 
 A = "0xabc0000000"
 
@@ -80,7 +80,8 @@ def test_report_finds_the_planted_habit():
     assert rows["revenge"]["win_pct"] < rows["calm (no pattern)"]["win_pct"] - 10
     assert rows["revenge"]["total_pnl"] < 0
     spirals = report.run(conn, "spirals")[2]
-    assert spirals and spirals[0]["positions"] >= 3 and spirals[0]["pnl"] < 0
+    assert spirals and spirals[0]["pnl"] < 0 and max(r["positions"] for r in spirals) >= 3
+    assert rows["average_down"]["total_pnl"] < rows["revenge"]["total_pnl"]
 
 
 def test_thresholds_can_be_changed_without_new_data():
@@ -91,12 +92,69 @@ def test_thresholds_can_be_changed_without_new_data():
     assert 0 < conn.execute(q).single()["c"] < wide
 
 
-def test_guard_says_wait_right_after_a_loss_and_unknown_without_cases():
+def test_guard_waits_only_for_a_habit_with_solid_evidence():
+    conn, _ = _store()   # one wallet: evidence comes from the bundled cohort study
+    lost = conn.execute("MATCH (p:Position) WHERE p.won = false RETURN p.closed_at AS t, p.coin AS coin "
+                        "ORDER BY t DESC LIMIT 1").single()
+    now = lost["t"] + 3 * 60000
+    add = guard.check(conn, now, adding_to_loser=True)
+    assert add["verdict"] == "WAIT"
+    assert add["planned_trade_matches"][0]["evidence"]["grade"].startswith("solid: costs")
+    assert add["guard_track_record"]["rows"]
+    # revenge alone has only weak evidence: the guard says so, and does not say WAIT
+    quick = guard.check(conn, now, coin=lost["coin"], side="long")
+    assert quick["verdict"] == "GO"
+    assert any(m["pattern"] == "revenge" and m["evidence"]["grade"].startswith("weak")
+               for m in quick["planned_trade_matches"])
+
+
+def test_guard_admits_what_it_cannot_know():
     conn, _ = _store()
-    lost = conn.execute("MATCH (p:Position) WHERE p.won = false RETURN p.closed_at AS t "
-                        "ORDER BY t DESC LIMIT 1").single()["t"]
-    out = guard.check(conn, lost + 8 * 60000)
-    assert out["verdict"] == "WAIT" and out["similar_cases"] >= 8
-    assert guard.check(conn, lost + 8 * 60000, min_cases=10 ** 6)["verdict"] == "UNKNOWN"
-    empty = relate.connect(":memory:")
-    assert guard.check(empty, 1)["verdict"] == "NO HISTORY"
+    conn.execute("MATCH (x:Pattern) REMOVE x.grade")
+    now = conn.execute("MATCH (p:Position) RETURN max(p.closed_at) AS t").single()["t"] + 60000
+    assert guard.check(conn, now, adding_to_loser=True)["verdict"] == "UNKNOWN"
+    empty = graph.open_store(":memory:")
+    empty.execute("CREATE (:Wallet {address: 'nobody'})")
+    assert guard.check(empty, 1)["verdict"] == "UNKNOWN"
+
+
+def test_ladder_of_adds_against_the_position_is_a_path():
+    conn, pos = _store()
+    laddered = [p for p in pos if p.adds_against]
+    assert laddered
+    rows = conn.execute(
+        "MATCH path = (p:Position)-[:AVERAGED_DOWN]->(:Add)-[:THEN]->*(last:Add) "
+        "WHERE NOT EXISTS { (last)-[:THEN]->(:Add) } "
+        "RETURN p.id AS id, length(path) AS rungs").fetchall()
+    assert {r["id"]: r["rungs"] for r in rows} == {p.id: p.adds_against for p in laddered}
+
+
+def test_averaging_down_is_only_counted_at_a_worse_price():
+    fills = [f("ETH", "B", 3000, 1, 0, 0, 1, 1), f("ETH", "B", 3100, 1, 1, 0, 2, 2),   # add at a better price
+             f("ETH", "A", 3200, 2, 2, 300, 3, 3),
+             f("ETH", "B", 3000, 1, 0, 0, 4, 4), f("ETH", "B", 2900, 1, 1, 0, 5, 5),   # add under water
+             f("ETH", "A", 2800, 2, 2, -300, 6, 6)]
+    first, second = positions.build_positions("0xabc", fills)
+    assert (first.adds, first.adds_against) == (1, 0)
+    assert (second.adds, second.adds_against) == (1, 1) and len(second.ladder) == 1
+
+
+def _cohort(wallets=40):
+    """Forty made-up traders with the same planted habits, enough to test evidence."""
+    conn = graph.open_store(":memory:")
+    for i in range(wallets):
+        key = f"w_{i:03d}"
+        pos = positions.build_positions(key, sample.make_fills(seed=100 + i, days=45))
+        graph.write(conn, key, pos, derive_now=False)
+    graph.derive(conn)
+    return conn
+
+
+def test_study_finds_the_costly_habit_and_audits_itself():
+    conn = _cohort()
+    rows = {r["pattern"]: r for r in study.evidence(conn, write=False)}
+    assert rows["average_down"]["grade"].startswith("solid: costs")
+    audit = {r["guard_said"]: r for r in study.audit(conn)["result_on_second_half"]}
+    assert audit["WAIT"]["avg_return_bps"] < audit["GO"]["avg_return_bps"]
+    peers = conn.execute("MATCH (:Wallet)-[e:PEER_OF]->(:Wallet) RETURN count(e) AS c").single()["c"]
+    assert peers == 40 * 8

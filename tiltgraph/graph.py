@@ -9,7 +9,9 @@ Shape of the graph:
                                                       the position that had just closed
   (:Position)-[:TILTED_FROM]->(:Position)             opened within 30 min after that loss
   (:Position)-[:OPENED_IN]->(:State)                  the situation it was opened in
-  (:Position)-[:SHOWS]->(:Pattern)                    revenge, size_up, flip, chase
+  (:Position)-[:SHOWS]->(:Pattern)                    revenge, size_up, flip, chase,
+                                                      average_down, pyramid
+  (:Position)-[:AVERAGED_DOWN]->(:Add)-[:THEN]->(:Add)  the ladder of adds against the position
   (:Wallet)-[:HAS_HABIT {positions, share, win_pct, avg_ret, pnl}]->(:Pattern)
   (:Wallet)-[:PEER_OF {score}]->(:Wallet)             nearest wallets by habit vector
 
@@ -28,6 +30,8 @@ SCHEMA = [
     "CREATE CONSTRAINT day_date IF NOT EXISTS FOR (d:Day) REQUIRE d.date IS UNIQUE",
     "CREATE CONSTRAINT pattern_name IF NOT EXISTS FOR (x:Pattern) REQUIRE x.name IS UNIQUE",
     "CREATE CONSTRAINT state_name IF NOT EXISTS FOR (s:State) REQUIRE s.name IS UNIQUE",
+    "CREATE CONSTRAINT add_id IF NOT EXISTS FOR (a:Add) REQUIRE a.id IS UNIQUE",
+    "CREATE CONSTRAINT verdict_name IF NOT EXISTS FOR (v:Verdict) REQUIRE v.name IS UNIQUE",
 ]
 
 PATTERNS = {
@@ -35,6 +39,8 @@ PATTERNS = {
     "size_up": "Opened after a loss with a position at least {size_up}x as large.",
     "flip": "Opened the opposite side on the same coin within {window} minutes after a loss.",
     "chase": "Re-entered the same coin and side within {window} minutes after a loss.",
+    "average_down": "Added to the position at a worse price than its average entry.",
+    "pyramid": "Added to the position, but only at a better price than its average entry.",
 }
 
 # The situation a position is opened in: what just closed, and how long ago.
@@ -96,7 +102,7 @@ def write(conn, address, positions, window=15, size_up=1.5, lookback_hours=24, d
                 p.closed_at = r.closed_at, p.pnl = r.pnl, p.fees = r.fees,
                 p.max_notional = r.max_notional, p.fills = r.fills, p.adds = r.adds,
                 p.taker_share = r.taker_share, p.minutes = r.minutes, p.won = r.won,
-                p.hour = r.hour, p.ret = r.ret, p.liquidated = r.liquidated, p.wallet = $a
+                p.hour = r.hour, p.ret = r.ret, p.liquidated = r.liquidated, p.adds_against = r.adds_against, p.wallet = $a
             MERGE (c:Coin {name: r.coin})
             MERGE (d:Day {date: r.day})
             MERGE (p)-[:ON]->(c)
@@ -106,6 +112,24 @@ def write(conn, address, positions, window=15, size_up=1.5, lookback_hours=24, d
             MERGE (w)-[:TRADED]->(p)
             """,
             {"rows": rows[i:i + 500], "a": address})
+
+    # The ladder: every add made at a worse price than the average entry, in order.
+    adds, links = [], []
+    for p in positions:
+        for step, (at, px, notional, away) in enumerate(p.ladder, 1):
+            adds.append({"id": f"{p.id}#{step}", "p": p.id, "at": at, "px": px, "notional": notional,
+                         "away": away, "step": step})
+            if step > 1:
+                links.append({"a": f"{p.id}#{step - 1}", "b": f"{p.id}#{step}"})
+    for i in range(0, len(adds), 1000):
+        conn.execute("UNWIND $rows AS r MERGE (a:Add {id: r.id}) "
+                     "SET a.at = r.at, a.px = r.px, a.notional = r.notional, a.pct_from_entry = r.away, "
+                     "    a.step = r.step "
+                     "WITH a, r WHERE r.step = 1 MATCH (p:Position {id: r.p}) MERGE (p)-[:AVERAGED_DOWN]->(a)",
+                     {"rows": adds[i:i + 1000]})
+    for i in range(0, len(links), 1000):
+        conn.execute("UNWIND $e AS e MATCH (a:Add {id: e.a}), (b:Add {id: e.b}) MERGE (a)-[:THEN]->(b)",
+                     {"e": links[i:i + 1000]})
 
     # NEXT: order of opening. OPENED_AFTER: what had just closed when this one opened.
     nxt, after = [], []
@@ -138,7 +162,7 @@ def write(conn, address, positions, window=15, size_up=1.5, lookback_hours=24, d
     return out
 
 
-def derive(conn, window=15, size_up=1.5, peers=8, min_positions=20, spiral_gap=30):
+def derive(conn, window=15, size_up=1.5, peers=8, min_positions=20, spiral_gap=30, min_cohort=30):
     """Everything that is computed from the raw chain. Safe to run again with other thresholds."""
     # 1. Patterns on positions.
     conn.execute("MATCH (:Position)-[s:SHOWS]->(:Pattern) DELETE s")
@@ -153,6 +177,9 @@ def derive(conn, window=15, size_up=1.5, peers=8, min_positions=20, spiral_gap=3
                  {"w": window, "n": "flip"})
     conn.execute(base + "AND r.gap_min <= $w AND prev.coin = p.coin AND prev.side = p.side WITH p " + tag,
                  {"w": window, "n": "chase"})
+
+    conn.execute("MATCH (p:Position) WHERE p.adds_against >= 1 WITH p " + tag, {"n": "average_down"})
+    conn.execute("MATCH (p:Position) WHERE p.adds >= 1 AND p.adds_against = 0 WITH p " + tag, {"n": "pyramid"})
 
     # 1b. TILTED_FROM: the loss-then-quick-reentry link that spirals are made of.
     conn.execute("MATCH (:Position)-[t:TILTED_FROM]->(:Position) DELETE t")
@@ -208,11 +235,23 @@ def derive(conn, window=15, size_up=1.5, peers=8, min_positions=20, spiral_gap=3
             {"k": peers + 1})
         linked = cur.single()["n"]
     conn.commit()
-    return {"wallets_with_habit": made, "peer_links": linked}
+
+    # 5. Evidence: with enough wallets, test the patterns here. Otherwise use the bundled study.
+    from . import study
+    wallets = conn.execute("MATCH (w:Wallet) RETURN count(w) AS n").single()["n"]
+    if wallets >= min_cohort:
+        study.evidence(conn)
+        conn.execute("MATCH (x:Pattern) SET x.evidence_from = $s", {"s": f"this store: {wallets} wallets"})
+        study.audit(conn)
+        source = "tested in this store"
+    else:
+        source = study.apply_bundled(conn) or "none"
+    conn.commit()
+    return {"wallets_with_habit": made, "peer_links": linked, "evidence": source}
 
 
 FEATURES = ["quick_after_loss", "size_after_loss", "flip", "chase",
-            "quick_after_win", "taker", "hold_log", "pace"]
+            "average_down", "taker", "hold_log", "pace"]
 
 
 def _habit_vectors(conn, min_positions):
@@ -234,6 +273,7 @@ def _habit_vectors(conn, min_positions):
                avg(ratio) AS size_after_loss, avg(flip) AS flip, avg(chase) AS chase,
                avg(qaw) AS quick_after_win, avg(p.taker_share) AS taker,
                avg(log10(p.minutes + 1.0)) AS hold_log,
+               avg(CASE WHEN p.adds_against >= 1 THEN 1.0 ELSE 0.0 END) AS average_down,
                (max(p.opened_at) - min(p.opened_at)) / 86400000.0 AS days
         """)]
     rows = [r for r in rows if r["n"] >= min_positions]

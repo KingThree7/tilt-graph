@@ -4,7 +4,7 @@ import json
 import sys
 import time
 
-from . import cohort, graph, guard, hl, positions, report, sample, view
+from . import cohort, graph, guard, hl, positions, report, sample, study, view
 
 
 def main(argv=None):
@@ -30,6 +30,12 @@ def main(argv=None):
     g.add_argument("--coin")
     g.add_argument("--side", choices=["long", "short"])
     g.add_argument("--notional", type=float, help="size of the planned trade in USDC")
+    g.add_argument("--adding-to-loser", action="store_true",
+                   help="the planned trade adds to an open position that is under water")
+
+    e = sub.add_parser("evidence", help="test every pattern wallet by wallet, and on later data")
+    e.add_argument("-d", "--database", default="cohort.rl")
+    e.add_argument("--export", action="store_true", help="save as the bundled evidence file")
 
     m = sub.add_parser("serve", help="run as an MCP server over stdio, read-only")
     m.add_argument("-d", "--database", default="tilt.rl")
@@ -71,7 +77,16 @@ def main(argv=None):
             print(json.dumps({"fills": len(fills), **stats, "store": args.database}))
         elif args.cmd == "guard":
             print(json.dumps(guard.check(conn, args.at or int(time.time() * 1000), args.wallet,
-                                         args.coin, args.side, args.notional), indent=1))
+                                         args.coin, args.side, args.notional,
+                                         args.adding_to_loser), indent=1))
+        elif args.cmd == "evidence":
+            rows = study.evidence(conn)
+            audit = study.audit(conn)
+            if args.export:
+                study.export(conn)
+            print(report.table(rows))
+            print("Rule learned on the first half of every wallet:", audit["rule_learned_on_first_half"])
+            print(report.table(audit["result_on_second_half"]))
         elif args.cmd == "cohort":
             import secrets
             addresses = cohort.pick(cohort.leaderboard(), args.wallets, seed=args.seed)

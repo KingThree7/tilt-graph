@@ -18,6 +18,8 @@ class Position:
     adds: int            # fills that grew the position after the first one
     taker_share: float   # share of fills that crossed the spread
     liquidated: bool = False  # the exchange closed it
+    adds_against: int = 0     # adds made at a worse price than the average entry: averaging down
+    ladder: tuple = ()        # those adds, in order: (time ms, price, notional, % from average entry)
 
     @property
     def minutes(self):
@@ -25,6 +27,7 @@ class Position:
 
     def row(self):
         d = asdict(self)
+        d.pop("ladder")
         d["minutes"] = round(self.minutes, 2)
         d["won"] = self.pnl > 0
         d["ret"] = round(self.pnl / self.max_notional, 5) if self.max_notional else 0.0
@@ -54,10 +57,19 @@ def build_positions(address, fills):
                 continue  # position was opened before our window: we cannot see its start
             cur = open_by_coin[coin] = dict(
                 coin=coin, side="long" if delta > 0 else "short", opened_at=f["time"],
-                pnl=0.0, fees=0.0, max_notional=0.0, fills=0, adds=0, takers=0, liq=False)
+                pnl=0.0, fees=0.0, max_notional=0.0, fills=0, adds=0, takers=0, liq=False,
+                against=0, avg=0.0, ladder=[])
         grows = abs(end) > abs(start) + EPS and start * end >= 0
         if grows and cur["fills"] > 0:
             cur["adds"] += 1
+            if cur["avg"] and ((cur["side"] == "long" and px < cur["avg"]) or
+                               (cur["side"] == "short" and px > cur["avg"])):
+                cur["against"] += 1
+                if len(cur["ladder"]) < 30:
+                    cur["ladder"].append((f["time"], px, round(abs(delta) * px, 2),
+                                          round(100 * abs(px - cur["avg"]) / cur["avg"], 3)))
+        if grows:  # keep the average entry price up to date
+            cur["avg"] = (cur["avg"] * abs(start) + px * abs(delta)) / abs(end) if abs(end) > EPS else px
         cur["fills"] += 1
         cur["takers"] += 1 if f.get("crossed") else 0
         cur["pnl"] += float(f.get("closedPnl") or 0)
@@ -72,13 +84,14 @@ def build_positions(address, fills):
                 opened_at=cur["opened_at"], closed_at=f["time"],
                 pnl=round(cur["pnl"] - cur["fees"], 4), fees=round(cur["fees"], 4),
                 max_notional=round(cur["max_notional"], 2), fills=cur["fills"], adds=cur["adds"],
-                taker_share=round(cur["takers"] / cur["fills"], 3), liquidated=cur["liq"]))
+                taker_share=round(cur["takers"] / cur["fills"], 3), liquidated=cur["liq"],
+                adds_against=cur["against"], ladder=tuple(cur["ladder"])))
             del open_by_coin[coin]
             if crossed_zero:
                 # one fill closed the old position and opened the opposite one
                 open_by_coin[coin] = dict(
                     coin=coin, side="long" if end > 0 else "short", opened_at=f["time"],
                     pnl=0.0, fees=0.0, max_notional=abs(end) * px, fills=1, adds=0,
-                    takers=1 if f.get("crossed") else 0, liq=False)
+                    takers=1 if f.get("crossed") else 0, liq=False, against=0, avg=px, ladder=[])
     done.sort(key=lambda p: (p.opened_at, p.id))
     return done

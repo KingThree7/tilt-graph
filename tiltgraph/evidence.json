@@ -1,0 +1,93 @@
+{
+ "source": "cohort study: 421 Hyperliquid wallets, 35509 closed positions",
+ "wallets": 421,
+ "positions": 35509,
+ "first_ms": 1790151885172,
+ "last_ms": 1795334574924,
+ "patterns": {
+  "revenge": {
+   "grade": "weak: fewer wins, but no measurable cost",
+   "tested_wallets": 204,
+   "win_pts": -3.3,
+   "ret_bps": 23.2,
+   "ret_t": 2.4,
+   "later_half_ret_bps": 12.2,
+   "later_half_ret_t": 1.4,
+   "share_of_positions_pct": 20.4,
+   "share_of_net_result_pct": 12.1
+  },
+  "size_up": {
+   "grade": "none: no reliable difference",
+   "tested_wallets": 176,
+   "win_pts": 0.5,
+   "ret_bps": -5.2,
+   "ret_t": -0.6,
+   "later_half_ret_bps": -1.1,
+   "later_half_ret_t": -0.1,
+   "share_of_positions_pct": 12.1,
+   "share_of_net_result_pct": 18.8
+  },
+  "flip": {
+   "grade": "weak: fewer wins, but no measurable cost",
+   "tested_wallets": 59,
+   "win_pts": -5.8,
+   "ret_bps": 14.9,
+   "ret_t": 1.7,
+   "later_half_ret_bps": -1.2,
+   "later_half_ret_t": -0.1,
+   "share_of_positions_pct": 5.7,
+   "share_of_net_result_pct": 5.0
+  },
+  "chase": {
+   "grade": "weak: fewer wins, but no measurable cost",
+   "tested_wallets": 74,
+   "win_pts": -5.6,
+   "ret_bps": 5.2,
+   "ret_t": 0.8,
+   "later_half_ret_bps": 0.5,
+   "later_half_ret_t": 0.0,
+   "share_of_positions_pct": 7.5,
+   "share_of_net_result_pct": 2.9
+  },
+  "average_down": {
+   "grade": "solid: costs money, and holds on later data",
+   "tested_wallets": 371,
+   "win_pts": -5.9,
+   "ret_bps": -58.7,
+   "ret_t": -8.4,
+   "later_half_ret_bps": -47.3,
+   "later_half_ret_t": -5.6,
+   "share_of_positions_pct": 36.2,
+   "share_of_net_result_pct": 93.0
+  },
+  "pyramid": {
+   "grade": "solid: goes with better results, and holds on later data",
+   "tested_wallets": 360,
+   "win_pts": 5.7,
+   "ret_bps": 36.6,
+   "ret_t": 6.9,
+   "later_half_ret_bps": 43.3,
+   "later_half_ret_t": 5.8,
+   "share_of_positions_pct": 29.7,
+   "share_of_net_result_pct": 2.3
+  }
+ },
+ "track_record": [
+  {
+   "name": "GO",
+   "positions": 11596,
+   "win_pct": 44.7,
+   "avg_return_bps": -23.4,
+   "liquidated_per_1000": 37.1,
+   "rule": "average_down"
+  },
+  {
+   "name": "WAIT",
+   "positions": 6264,
+   "win_pct": 42.8,
+   "avg_return_bps": -60.0,
+   "liquidated_per_1000": 74.4,
+   "rule": "average_down"
+  }
+ ]
+}
