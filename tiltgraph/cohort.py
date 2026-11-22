@@ -64,7 +64,8 @@ def fetch(addresses, start_ms, cache_dir, pause=1.1, max_pages=3, log=print):
             log(f"{i}/{len(addresses)} wallets, last had {len(fills)} fills")
 
 
-def build(conn, cache_dir, salt, min_positions=20, max_fills=5500, window=15, size_up=1.5, log=print):
+def build(conn, cache_dir, salt, min_positions=20, max_fills=5500, window=15, size_up=1.5, limit=None,
+          log=print):
     """Fold every cached wallet into positions and write them all into one store."""
     from . import graph, positions as pos
     kept = dropped = total = 0
@@ -84,6 +85,8 @@ def build(conn, cache_dir, salt, min_positions=20, max_fills=5500, window=15, si
         graph.write(conn, key, closed, derive_now=False)
         kept += 1
         total += len(closed)
+        if limit and kept >= limit:
+            break
     out = {"wallets": kept, "dropped": dropped, "positions": total}
     out.update(graph.derive(conn, window=window, size_up=size_up))
     return out

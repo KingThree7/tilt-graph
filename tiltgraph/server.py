@@ -19,18 +19,21 @@ thin; never turn UNKNOWN into GO. The graph describes past behaviour. It predict
 SCHEMA_TEXT = """Nodes
   (:Wallet {address, positions, win_pct, pnl, liquidations, habit: VECTOR})
   (:Position {id, wallet, coin, side, opened_at, closed_at, minutes, pnl, ret, won,
-              max_notional, fills, adds, taker_share, liquidated, hour})
-  (:Coin {name})  (:Day {date})
+              max_notional, fills, adds, adds_against, taker_share, liquidated, hour})
+  (:Coin {name})
+  (:Add {id, step, at, px, notional, pct_from_entry})   one add made under water
+  (:Verdict {name, positions, win_pct, avg_return_bps, liquidated_per_1000, rule})
   (:State {name, after, low_min, high_min, rank})   the situation a position was opened in
-  (:Pattern {name, meaning})                        revenge, size_up, flip, chase
+  (:Pattern {name, meaning, grade, tested_wallets, win_pts, ret_bps, later_half_ret_bps,
+             share_of_net_result_pct, evidence_from})
 Relationships
   (:Wallet)-[:TRADED]->(:Position)-[:ON]->(:Coin)
-  (:Position)-[:ON_DAY]->(:Day)
-  (:Position)-[:NEXT]->(:Position)                         next by open time
   (:Position)-[:OPENED_AFTER {gap_min, size_ratio}]->(:Position)   what had just closed
   (:Position)-[:TILTED_FROM {gap_min}]->(:Position)        opened within 30 min after that loss
   (:Position)-[:OPENED_IN]->(:State)
   (:Position)-[:SHOWS]->(:Pattern)
+  (:Position)-[:AVERAGED_DOWN]->(:Add)-[:THEN]->(:Add)     the ladder of adds, in order
+  (:Position)-[:GUARD_SAID {because}]->(:Verdict)          replayed advice, next to the outcome
   (:Wallet)-[:HAS_HABIT {positions, share, win_pct, avg_ret, pnl}]->(:Pattern)
   (:Wallet)-[:PEER_OF {score}]->(:Wallet)                  nearest by habit vector
 Times are milliseconds since epoch, UTC. pnl is in USDC after fees. ret is pnl / max_notional."""

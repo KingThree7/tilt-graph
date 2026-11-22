@@ -57,6 +57,7 @@ def main(argv=None):
     v = sub.add_parser("view", help="write a self-contained HTML page of the report")
     v.add_argument("-d", "--database", default="tilt.rl")
     v.add_argument("-o", "--output", default="tilt.html")
+    v.add_argument("--wallet", help="which wallet to show in detail")
 
     q = sub.add_parser("ask", help="run one question, print JSON")
     q.add_argument("name", choices=sorted(report.ALL))
@@ -110,7 +111,7 @@ def main(argv=None):
             print(json.dumps({**stats, "store": args.database}))
         elif args.cmd == "view":
             with open(args.output, "w") as fh:
-                fh.write(view.html(conn))
+                fh.write(view.html(conn, args.wallet))
             print(args.output)
         elif args.cmd == "report":
             row = conn.execute("MATCH (w:Wallet) RETURN w.address AS a LIMIT 1").fetchone()

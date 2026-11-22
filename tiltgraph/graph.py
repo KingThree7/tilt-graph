@@ -3,8 +3,6 @@
 Shape of the graph:
 
   (:Wallet)-[:TRADED]->(:Position)-[:ON]->(:Coin)
-  (:Position)-[:ON_DAY]->(:Day)
-  (:Position)-[:NEXT]->(:Position)                    next position by open time
   (:Position)-[:OPENED_AFTER {gap_min, size_ratio}]->(:Position)
                                                       the position that had just closed
   (:Position)-[:TILTED_FROM]->(:Position)             opened within 30 min after that loss
@@ -27,7 +25,6 @@ SCHEMA = [
     "CREATE CONSTRAINT position_id IF NOT EXISTS FOR (p:Position) REQUIRE p.id IS UNIQUE",
     "CREATE CONSTRAINT coin_name IF NOT EXISTS FOR (c:Coin) REQUIRE c.name IS UNIQUE",
     "CREATE CONSTRAINT wallet_address IF NOT EXISTS FOR (w:Wallet) REQUIRE w.address IS UNIQUE",
-    "CREATE CONSTRAINT day_date IF NOT EXISTS FOR (d:Day) REQUIRE d.date IS UNIQUE",
     "CREATE CONSTRAINT pattern_name IF NOT EXISTS FOR (x:Pattern) REQUIRE x.name IS UNIQUE",
     "CREATE CONSTRAINT state_name IF NOT EXISTS FOR (s:State) REQUIRE s.name IS UNIQUE",
     "CREATE CONSTRAINT add_id IF NOT EXISTS FOR (a:Add) REQUIRE a.id IS UNIQUE",
@@ -39,8 +36,8 @@ PATTERNS = {
     "size_up": "Opened after a loss with a position at least {size_up}x as large.",
     "flip": "Opened the opposite side on the same coin within {window} minutes after a loss.",
     "chase": "Re-entered the same coin and side within {window} minutes after a loss.",
-    "average_down": "Added to the position at a worse price than its average entry.",
-    "pyramid": "Added to the position, but only at a better price than its average entry.",
+    "average_down": "Added to the position while it was at least 1% under water.",
+    "pyramid": "Added to the position, but never while it was 1% or more under water.",
 }
 
 # The situation a position is opened in: what just closed, and how long ago.
@@ -76,10 +73,6 @@ def state_name(prev_won, gap_min):
     return "calm"
 
 
-def _day(ms):
-    return dt.datetime.fromtimestamp(ms / 1000, dt.timezone.utc).strftime("%Y-%m-%d")
-
-
 def write(conn, address, positions, window=15, size_up=1.5, lookback_hours=24, derive_now=True):
     """Idempotent: running it again on the same store updates, never duplicates.
 
@@ -88,7 +81,6 @@ def write(conn, address, positions, window=15, size_up=1.5, lookback_hours=24, d
     rows = []
     for p in positions:
         r = p.row()
-        r["day"] = _day(p.opened_at)
         r["hour"] = dt.datetime.fromtimestamp(p.opened_at / 1000, dt.timezone.utc).hour
         rows.append(r)
 
@@ -104,9 +96,7 @@ def write(conn, address, positions, window=15, size_up=1.5, lookback_hours=24, d
                 p.taker_share = r.taker_share, p.minutes = r.minutes, p.won = r.won,
                 p.hour = r.hour, p.ret = r.ret, p.liquidated = r.liquidated, p.adds_against = r.adds_against, p.wallet = $a
             MERGE (c:Coin {name: r.coin})
-            MERGE (d:Day {date: r.day})
             MERGE (p)-[:ON]->(c)
-            MERGE (p)-[:ON_DAY]->(d)
             WITH p
             MATCH (w:Wallet {address: $a})
             MERGE (w)-[:TRADED]->(p)
@@ -131,13 +121,11 @@ def write(conn, address, positions, window=15, size_up=1.5, lookback_hours=24, d
         conn.execute("UNWIND $e AS e MATCH (a:Add {id: e.a}), (b:Add {id: e.b}) MERGE (a)-[:THEN]->(b)",
                      {"e": links[i:i + 1000]})
 
-    # NEXT: order of opening. OPENED_AFTER: what had just closed when this one opened.
-    nxt, after = [], []
+    # OPENED_AFTER: what had just closed when this one opened.
+    after = []
     by_close = sorted(positions, key=lambda p: p.closed_at)
     j, last_closed = 0, None
-    for k, p in enumerate(positions):
-        if k:
-            nxt.append({"a": positions[k - 1].id, "b": p.id})
+    for p in positions:
         while j < len(by_close) and by_close[j].closed_at <= p.opened_at:
             if by_close[j].id != p.id:
                 last_closed = by_close[j]
@@ -148,14 +136,11 @@ def write(conn, address, positions, window=15, size_up=1.5, lookback_hours=24, d
                 after.append({"a": p.id, "b": last_closed.id, "gap": round(gap, 2),
                               "ratio": round(p.max_notional / last_closed.max_notional, 3)
                               if last_closed.max_notional else None})
-    for i in range(0, len(nxt), 1000):
-        conn.execute("UNWIND $e AS e MATCH (a:Position {id: e.a}), (b:Position {id: e.b}) "
-                     "MERGE (a)-[:NEXT]->(b)", {"e": nxt[i:i + 1000]})
     for i in range(0, len(after), 1000):
         conn.execute("UNWIND $e AS e MATCH (a:Position {id: e.a}), (b:Position {id: e.b}) "
                      "MERGE (a)-[r:OPENED_AFTER]->(b) SET r.gap_min = e.gap, r.size_ratio = e.ratio",
                      {"e": after[i:i + 1000]})
-    out = {"positions": len(rows), "next": len(nxt), "opened_after": len(after)}
+    out = {"positions": len(rows), "opened_after": len(after), "ladder_adds": len(adds)}
     if derive_now:
         out.update(derive(conn, window=window, size_up=size_up))
     conn.commit()

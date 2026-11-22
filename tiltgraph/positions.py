@@ -2,6 +2,7 @@
 from dataclasses import dataclass, asdict
 
 EPS = 1e-9
+LADDER_CAP = 12  # rungs kept per position; deeper ladders are counted in adds_against
 
 
 @dataclass
@@ -39,7 +40,10 @@ def _signed(fill):
     return sz if fill["side"] == "B" else -sz
 
 
-def build_positions(address, fills):
+UNDER_WATER_PCT = 1.0  # an add counts as averaging down when the price is this far past the average entry
+
+
+def build_positions(address, fills, under_water_pct=UNDER_WATER_PCT):
     """Return closed positions, oldest first. A position still open at the end is dropped."""
     open_by_coin, done = {}, []
     for f in fills:
@@ -62,12 +66,12 @@ def build_positions(address, fills):
         grows = abs(end) > abs(start) + EPS and start * end >= 0
         if grows and cur["fills"] > 0:
             cur["adds"] += 1
-            if cur["avg"] and ((cur["side"] == "long" and px < cur["avg"]) or
-                               (cur["side"] == "short" and px > cur["avg"])):
+            away = 100 * (cur["avg"] - px) / cur["avg"] * (1 if cur["side"] == "long" else -1) if cur["avg"] else 0
+            if away >= under_water_pct:
                 cur["against"] += 1
-                if len(cur["ladder"]) < 30:
+                if len(cur["ladder"]) < LADDER_CAP:
                     cur["ladder"].append((f["time"], px, round(abs(delta) * px, 2),
-                                          round(100 * abs(px - cur["avg"]) / cur["avg"], 3)))
+                                          round(away, 3)))
         if grows:  # keep the average entry price up to date
             cur["avg"] = (cur["avg"] * abs(start) + px * abs(delta)) / abs(end) if abs(end) > EPS else px
         cur["fills"] += 1
