@@ -4,7 +4,7 @@ import json
 import sys
 import time
 
-from . import graph, hl, positions, report
+from . import graph, guard, hl, positions, report, sample, view
 
 
 def main(argv=None):
@@ -22,6 +22,17 @@ def main(argv=None):
     r = sub.add_parser("report", help="print the report as markdown")
     r.add_argument("-d", "--database", default="tilt.rl")
     r.add_argument("--queries", action="store_true", help="show the Cypher under each table")
+
+    g = sub.add_parser("guard", help="before the next trade: what state am I in, how did that go before?")
+    g.add_argument("-d", "--database", default="tilt.rl")
+    g.add_argument("--at", type=int, help="moment to judge, in ms since epoch (default: now)")
+
+    s = sub.add_parser("sample", help="build the bundled example store from a made-up trader")
+    s.add_argument("-d", "--database", default="examples/demo.rl")
+
+    v = sub.add_parser("view", help="write a self-contained HTML page of the report")
+    v.add_argument("-d", "--database", default="tilt.rl")
+    v.add_argument("-o", "--output", default="tilt.html")
 
     q = sub.add_parser("ask", help="run one question, print JSON")
     q.add_argument("name", choices=sorted(report.QUESTIONS))
@@ -41,6 +52,16 @@ def main(argv=None):
             pos = positions.build_positions(address, fills)
             stats = graph.write(conn, address, pos, window=args.window, size_up=args.size_up)
             print(json.dumps({"fills": len(fills), **stats, "store": args.database}))
+        elif args.cmd == "guard":
+            print(json.dumps(guard.check(conn, args.at or int(time.time() * 1000)), indent=1))
+        elif args.cmd == "sample":
+            pos = positions.build_positions(sample.ADDRESS, sample.make_fills())
+            stats = graph.write(conn, sample.ADDRESS, pos)
+            print(json.dumps({**stats, "store": args.database}))
+        elif args.cmd == "view":
+            with open(args.output, "w") as fh:
+                fh.write(view.html(conn))
+            print(args.output)
         elif args.cmd == "report":
             row = conn.execute("MATCH (w:Wallet) RETURN w.address AS a LIMIT 1").fetchone()
             print(report.markdown(conn, row["a"] if row else "?", with_queries=args.queries))

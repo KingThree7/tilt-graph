@@ -1,0 +1,129 @@
+# Tilt Graph
+
+**What do you do right after a loss?** Tilt Graph reads the public fills of a Hyperliquid
+address, links every position to the one that had just closed before it, and keeps the result
+in one [Relate](https://relatedb.ai) file. Then it answers questions a trade table cannot:
+
+- Positions opened within 15 minutes after a loss win 33% of the time. Calm ones win 53%.
+- The worst hour was not one bad trade. It was six in a row, each opened minutes after the last loss.
+- Right now you are 8 minutes past a loss. In 30 earlier moments like this one, you lost 70% of the time.
+
+Those numbers come from the bundled example. Entry for the
+[Relate by Neo4j Hackathon](https://relate.devpost.com/).
+
+![The report page](docs/report.png)
+
+## Run it in two minutes
+
+Python 3.9 or later. No key, no account, no server.
+
+```bash
+git clone https://github.com/KingThree7/tilt-graph && cd tilt-graph
+pip install -e .
+
+tiltgraph report -d examples/demo.rl          # the bundled example, as markdown
+tiltgraph view   -d examples/demo.rl -o tilt.html   # the same as one HTML page
+tiltgraph guard  -d examples/demo.rl --at 1791505317848   # "should I wait?" at a given moment
+```
+
+With a real address (fills on Hyperliquid are public):
+
+```bash
+tiltgraph ingest 0xYOUR_ADDRESS --days 30 -d mine.rl
+tiltgraph report -d mine.rl --queries         # --queries prints the Cypher under each table
+tiltgraph guard  -d mine.rl                   # judged at this moment
+```
+
+`ingest` can be run again at any time. It updates the same store and never duplicates.
+
+## How we use Relate, and why
+
+**Mode: a single file** (`.rl`). The bundled store is `examples/demo.rl`; open it with any
+Relate client or the `relate` CLI to inspect it.
+
+A trade history is usually a table, and a table answers "how much did I lose". The useful
+question is about order and nearness: what had just happened when I opened this? That is a
+relationship, so we store it as one.
+
+```
+(:Wallet)-[:TRADED]->(:Position)-[:ON]->(:Coin)
+(:Position)-[:NEXT]->(:Position)
+(:Position)-[:OPENED_AFTER {gap_min, size_ratio}]->(:Position)
+(:Position)-[:SHOWS]->(:Pattern)        revenge · size_up · flip · chase
+```
+
+`OPENED_AFTER` points from a position to the last one that had closed when it opened, with the
+wait in minutes and the change in size on the relationship. Everything else follows from it:
+
+- **Patterns are derived inside the graph.** `SHOWS` relationships are written by Cypher from
+  `OPENED_AFTER`, so `ingest --window 5` re-derives them with another threshold without
+  fetching anything again.
+- **Spirals are a path, not a row.** A loss chain is `(last)-[:OPENED_AFTER]->+(first)` where
+  every wait is short and every earlier position lost. One quantified path pattern finds
+  chains of any length. In SQL this is a recursive query per chain length.
+- **The guard is a neighbourhood lookup.** "What state am I in" is the last closed position
+  and the wait since. "How did that go before" is every `OPENED_AFTER` with the same shape.
+
+Why Relate in particular:
+
+- **Embedded.** A trading journal is private. The graph lives in a file next to the tool, in
+  the same process. There is nothing to deploy and nothing leaves the machine except the
+  request for public fills.
+- **One file.** A journal should be something you can copy, back up and delete.
+- **Agent-ready.** `relate serve --mcp stdio --database mine.rl --read-only` gives an agent the
+  schema and read-only Cypher. [`AGENTS.md`](AGENTS.md) tells it what the shape means and how
+  to answer "should I wait?" with numbers instead of an opinion.
+
+## What it reports
+
+| Question | Command |
+|---|---|
+| How did all closed positions do? | `tiltgraph ask overall` |
+| What does each pattern cost compared with calm trades? | `tiltgraph ask patterns` |
+| Does waiting after a loss help? | `tiltgraph ask after_loss_by_gap` |
+| Is the next position different after a win than after a loss? | `tiltgraph ask after_win_vs_loss` |
+| The worst spirals | `tiltgraph ask spirals` |
+| Which coins pull this trader into patterns? | `tiltgraph ask coins` |
+| At which hours do the patterns happen? | `tiltgraph ask hours` |
+
+`ask` prints JSON. The statements are in [`tiltgraph/report.py`](tiltgraph/report.py).
+
+## The bundled example is made up
+
+`examples/demo.rl` holds a trader we generated ([`tiltgraph/sample.py`](tiltgraph/sample.py),
+fixed seed), written as fills in the exact shape Hyperliquid returns, so it runs through the
+same code as a real address. We did this for two reasons: the example should not single out a
+real person's losses, and the tests need a known truth. The generated trader is calm most of
+the time and sometimes re-enters within minutes after a loss, larger, with worse odds. The
+tests check that the report finds this again from the fills alone. Rebuild it with
+`tiltgraph sample -d examples/demo.rl`.
+
+## Tests
+
+```bash
+pip install -e ".[test]" && pytest
+```
+
+Nine tests: folding fills into positions (adds, a fill that closes and reverses, positions
+that began before the window, spot fills), writing twice changes nothing, `OPENED_AFTER`
+always points at the right position, the report finds the planted habit, thresholds can be
+changed without new data, and the guard's three verdicts.
+
+## Limits
+
+- A position counts once it is closed. One that began before the fetched window or is still
+  open is left out, so totals differ from the exchange's account value.
+- Result is closed PnL minus fees. Funding payments are not in fills and are not counted.
+- The patterns describe timing and size. They do not know why a trade was opened. A fast
+  re-entry can be a plan; the report shows what it cost on average, not what was in someone's head.
+- With few positions the percentages mean little. The guard says `UNKNOWN` below eight cases.
+- This describes past behaviour. It does not predict prices and is not trading advice.
+
+## How it was built
+
+Built for the hackathon, started on 22 November 2026. Tools: Relate 1.2.0 (`relate-db`),
+Python standard library, the public Hyperliquid info API, pytest. **AI use:** the code, tests
+and this README were written with Claude (Anthropic) as a coding assistant, directed and
+reviewed by the author, and every number above comes from running the code.
+
+MIT License.
