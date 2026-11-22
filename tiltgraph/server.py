@@ -8,7 +8,7 @@ Each tool answers with the facts and with the Cypher behind them.
 import json
 import time
 
-from . import graph, guard, report
+from . import graph, guard, hl, report
 
 INSTRUCTIONS = """Tilt Graph holds closed trading positions as a graph and links each position to
 the one that had just closed before it. Before you place or recommend a trade for a wallet,
@@ -56,12 +56,21 @@ def build(database):
 
     @app.tool()
     def pre_trade_check(wallet: str = "", coin: str = "", side: str = "", notional: float = 0.0,
-                        adding_to_loser: bool = False, at_ms: int = 0) -> dict:
+                        adding_to_loser: bool = False, live: bool = False, at_ms: int = 0) -> dict:
         """Call this before every trade. Says GO, WAIT or UNKNOWN for a wallet at this moment
         (or at at_ms). WAIT is said only for a habit with solid, out-of-sample evidence of cost.
         coin, side ("long"/"short") and notional (USDC) describe the planned trade and are optional.
-        Set adding_to_loser when the trade adds to an open position that is under water."""
+        Set adding_to_loser when the trade adds to an open position that is under water, or set
+        live=true to have that looked up on Hyperliquid (the wallet must be a real address)."""
         now = at_ms or int(time.time() * 1000)
+        if live and coin and side:
+            address = with_store(lambda c: guard._wallet(c, wallet or None))
+            adding_to_loser, open_pos = hl.would_average_down(address, coin, side)
+            out = with_store(lambda c: guard.check(c, now, address, coin, side, notional or None,
+                                                   adding_to_loser))
+            if open_pos:
+                out["open_position"] = open_pos
+            return out
         return with_store(lambda c: guard.check(c, now, wallet or None, coin or None, side or None,
                                                 notional or None, adding_to_loser))
 

@@ -1,5 +1,3 @@
-import relate
-
 from tiltgraph import graph, guard, positions, report, sample, study
 
 A = "0xabc0000000"

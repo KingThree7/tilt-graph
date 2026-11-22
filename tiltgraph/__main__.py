@@ -33,6 +33,10 @@ def main(argv=None):
     g.add_argument("--adding-to-loser", action="store_true",
                    help="the planned trade adds to an open position that is under water")
 
+    g.add_argument("--live", action="store_true",
+                   help="look up the wallet's open position on Hyperliquid to see whether this "
+                        "trade would add to a loser (the wallet must be a real address)")
+
     e = sub.add_parser("evidence", help="test every pattern wallet by wallet, and on later data")
     e.add_argument("-d", "--database", default="cohort.rl")
     e.add_argument("--export", action="store_true", help="save as the bundled evidence file")
@@ -76,9 +80,15 @@ def main(argv=None):
             stats = graph.write(conn, address, pos, window=args.window, size_up=args.size_up)
             print(json.dumps({"fills": len(fills), **stats, "store": args.database}))
         elif args.cmd == "guard":
-            print(json.dumps(guard.check(conn, args.at or int(time.time() * 1000), args.wallet,
-                                         args.coin, args.side, args.notional,
-                                         args.adding_to_loser), indent=1))
+            adding, open_pos = args.adding_to_loser, None
+            if args.live and args.coin and args.side:
+                wallet = guard._wallet(conn, args.wallet)
+                adding, open_pos = hl.would_average_down(wallet, args.coin, args.side)
+            out = guard.check(conn, args.at or int(time.time() * 1000), args.wallet,
+                              args.coin, args.side, args.notional, adding)
+            if open_pos:
+                out["open_position"] = open_pos
+            print(json.dumps(out, indent=1))
         elif args.cmd == "evidence":
             rows = study.evidence(conn)
             audit = study.audit(conn)

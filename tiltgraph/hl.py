@@ -39,3 +39,22 @@ def fetch_fills(address, start_ms, end_ms=None, max_pages=60, pause=0.0):
         cursor = max(f["time"] for f in page)
     fills.sort(key=lambda f: (f["time"], f["tid"]))
     return fills
+
+
+def open_position(address, coin):
+    """The address's open position on a coin right now, or None. Public, like the fills."""
+    state = _post({"type": "clearinghouseState", "user": address}) or {}
+    for item in state.get("assetPositions", []):
+        p = item.get("position", {})
+        if p.get("coin") == coin and float(p.get("szi", 0)) != 0:
+            size = float(p["szi"])
+            return {"coin": coin, "side": "long" if size > 0 else "short", "size": abs(size),
+                    "entry_px": float(p["entryPx"]), "unrealized_pnl": float(p["unrealizedPnl"]),
+                    "liquidation_px": float(p["liquidationPx"]) if p.get("liquidationPx") else None}
+    return None
+
+
+def would_average_down(address, coin, side):
+    """True when a new order on this coin and side adds to an open position that is under water."""
+    pos = open_position(address, coin)
+    return bool(pos and pos["side"] == side and pos["unrealized_pnl"] < 0), pos
