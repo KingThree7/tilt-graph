@@ -16,6 +16,9 @@ Shape of the graph:
 The OPENED_AFTER chain is the point: a number in a table says "you lost".
 The chain says "you lost, and four minutes later you did this".
 """
+import gzip
+import os
+import shutil
 import datetime as dt
 import math
 
@@ -53,7 +56,18 @@ STATES = [
 HABIT_DIM = 8
 
 
+def _unpack(path):
+    """The cohort store ships gzipped. Unpack it next to the archive the first time it is asked for."""
+    path = str(path)
+    if not os.path.exists(path) and os.path.exists(path + ".gz"):
+        with gzip.open(path + ".gz", "rb") as src, open(path + ".part", "wb") as dst:
+            shutil.copyfileobj(src, dst)
+        os.replace(path + ".part", path)
+    return path
+
+
 def open_store(path, read_only=False):
+    path = _unpack(path)
     if read_only:
         return relate.connect(path, read_only=True)
     conn = relate.connect(path)

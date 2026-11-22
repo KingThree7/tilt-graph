@@ -24,7 +24,8 @@ SCHEMA_TEXT = """Nodes
   (:Add {id, step, at, px, notional, pct_from_entry})   one add made under water
   (:Verdict {name, positions, win_pct, avg_return_bps, liquidated_per_1000, rule})
   (:State {name, after, low_min, high_min, rank})   the situation a position was opened in
-  (:Pattern {name, meaning, grade, tested_wallets, win_pts, ret_bps, later_half_ret_bps,
+  (:Pattern {name, meaning, grade, wallets, compared, win_pts, ret_bps, ret_t, liq_per_1000,
+             liq_t, later_ret_bps, later_liq_per_1000, share_of_positions_pct,
              share_of_net_result_pct, evidence_from})
 Relationships
   (:Wallet)-[:TRADED]->(:Position)-[:ON]->(:Coin)

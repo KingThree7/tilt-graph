@@ -174,3 +174,37 @@ def test_worst_move_comes_from_prices_seen_while_the_position_was_open():
     (p,) = positions.build_positions("0xabc", fills)
     assert _worst(fills, [p])[p.id] == 3.0          # 2910 is 3% under the entry at 3000
     assert p.adds_against == 1 and p.ladder[0][3] == 2.0
+
+
+def test_the_agent_server_answers_and_cannot_write(tmp_path):
+    pytest = __import__("pytest")
+    pytest.importorskip("mcp")
+    import asyncio
+    import json
+    import sys
+    from mcp import ClientSession, StdioServerParameters
+    from mcp.client.stdio import stdio_client
+
+    path = str(tmp_path / "t.rl")
+    conn = graph.open_store(path)
+    fills = sample.make_fills()
+    graph.write(conn, sample.ADDRESS, positions.build_positions(sample.ADDRESS, fills))
+    before = _counts(conn)
+    conn.close()
+
+    async def talk():
+        params = StdioServerParameters(command=sys.executable, args=["-m", "tiltgraph", "serve", "-d", path])
+        async with stdio_client(params) as (r, w):
+            async with ClientSession(r, w) as s:
+                await s.initialize()
+                names = {t.name for t in (await s.list_tools()).tools}
+                check = await s.call_tool("pre_trade_check", {"adding_to_loser": True})
+                write = await s.call_tool("read_cypher", {"query": "CREATE (:Hacked)"})
+                return names, check.content[0].text, write.content[0].text
+
+    names, check, write = asyncio.run(talk())
+    assert {"pre_trade_check", "habits", "peers", "spirals", "read_cypher"} <= names
+    assert json.loads(check)["verdict"] in ("GO", "WAIT", "UNKNOWN")
+    assert "error" in json.loads(write)
+    conn = graph.open_store(path, read_only=True)
+    assert _counts(conn) == before

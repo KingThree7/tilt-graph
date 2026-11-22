@@ -17,10 +17,10 @@ h2{font-size:21px;margin:44px 0 6px}p.lead{color:var(--mute);margin:0 0 16px;max
 .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px}
 .card b{display:block;font-size:26px;letter-spacing:-.01em}.card span{color:var(--mute);font-size:13px}
 .scroll{overflow-x:auto;border:1px solid var(--line);border-radius:12px;background:var(--card)}
-table{border-collapse:collapse;width:100%;font-size:14px}th,td{padding:8px 12px;text-align:right;
+table{border-collapse:collapse;width:100%;font-size:14px}th,td{padding:8px 9px;text-align:right;
 border-bottom:1px solid var(--line);white-space:nowrap}th{color:var(--mute);font-weight:600;font-size:12px;
 text-transform:uppercase;letter-spacing:.04em}td:first-child,th:first-child{text-align:left}
-tr:last-child td{border-bottom:0}td.wrap{white-space:normal;min-width:230px;text-align:left}.neg{color:var(--bad)}.pos{color:var(--good)}
+tr:last-child td{border-bottom:0}th{white-space:normal;vertical-align:bottom}td.wrap{white-space:normal;min-width:190px;text-align:left}.neg{color:var(--bad)}.pos{color:var(--good)}
 .chip{display:inline-block;padding:2px 9px;border-radius:99px;font-size:12px;font-weight:600;
 border:1px solid currentColor}.solidbad{color:var(--bad)}.solidgood{color:var(--good)}.weak{color:var(--warn)}
 .none{color:var(--mute)}.chain{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:8px 0 14px}
@@ -105,7 +105,7 @@ def html(conn, wallet=None):
               f"Evidence from: {_e(src)}.</p>",
               _table(ev, [("name_html", "Habit", 0), ("grade_html", "Evidence", 0), ("wallets", "Wallets", 0),
                           ("win_pts", "Win rate, pts", 1), ("ret_bps", "Return, bps", 1),
-                          ("liq", "Liquidations per 1,000", 1), ("later_liq", "Same, later data", 1),
+                          ("liq", "Liq. per 1,000", 1), ("later_liq", "Same, later data", 1),
                           ("share", "% of positions", 1)])]
 
     bands = study.under_water(conn)

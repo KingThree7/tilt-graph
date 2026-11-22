@@ -69,7 +69,9 @@ def main(argv=None):
     if args.cmd == "serve":
         from . import server
         return server.serve(args.database)
-    conn = graph.open_store(args.database)
+    if args.cmd == "sample" and os.path.exists(args.database):
+        os.remove(args.database)  # the example is rebuilt from nothing, never patched
+    conn = graph.open_store(args.database, read_only=args.cmd in ("report", "guard", "view", "ask"))
     try:
         if args.cmd == "ingest":
             address = args.address.lower()

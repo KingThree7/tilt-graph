@@ -1,0 +1,4 @@
+relate-db>=1.2.0
+
+[test]
+pytest
