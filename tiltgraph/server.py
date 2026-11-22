@@ -139,7 +139,10 @@ def build(database):
         def run(c):
             rows = _rows(c, query)
             return {"rows": rows[:limit], "truncated": len(rows) > limit}
-        return with_store(run)
+        try:
+            return with_store(run)
+        except Exception as err:  # hand the engine's message back so the agent can fix its query
+            return {"error": str(err)}
 
     return app
 
