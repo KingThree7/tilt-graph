@@ -20,7 +20,7 @@ def _post(body, retries=4):
             time.sleep(2 ** attempt)
 
 
-def fetch_fills(address, start_ms, end_ms=None, max_pages=60):
+def fetch_fills(address, start_ms, end_ms=None, max_pages=60, pause=0.0):
     """All fills from start_ms on, oldest first, paged by time."""
     fills, seen, cursor = [], set(), start_ms
     for _ in range(max_pages):
@@ -28,6 +28,8 @@ def fetch_fills(address, start_ms, end_ms=None, max_pages=60):
         if end_ms:
             body["endTime"] = end_ms
         page = _post(body) or []
+        if pause:
+            time.sleep(pause)
         fresh = [f for f in page if f["tid"] not in seen]
         for f in fresh:
             seen.add(f["tid"])

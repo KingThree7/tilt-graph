@@ -4,7 +4,7 @@ import json
 import sys
 import time
 
-from . import graph, guard, hl, positions, report, sample, view
+from . import cohort, graph, guard, hl, positions, report, sample, view
 
 
 def main(argv=None):
@@ -26,6 +26,20 @@ def main(argv=None):
     g = sub.add_parser("guard", help="before the next trade: what state am I in, how did that go before?")
     g.add_argument("-d", "--database", default="tilt.rl")
     g.add_argument("--at", type=int, help="moment to judge, in ms since epoch (default: now)")
+    g.add_argument("--wallet", help="needed when the store holds several wallets")
+    g.add_argument("--coin")
+    g.add_argument("--side", choices=["long", "short"])
+    g.add_argument("--notional", type=float, help="size of the planned trade in USDC")
+
+    m = sub.add_parser("serve", help="run as an MCP server over stdio, read-only")
+    m.add_argument("-d", "--database", default="tilt.rl")
+
+    c = sub.add_parser("cohort", help="build a store of many public wallets (aliases only)")
+    c.add_argument("-d", "--database", default="cohort.rl")
+    c.add_argument("--wallets", type=int, default=300)
+    c.add_argument("--days", type=int, default=60)
+    c.add_argument("--cache", default=".tilt-cache", help="folder for downloaded fills")
+    c.add_argument("--seed", type=int, default=11)
 
     s = sub.add_parser("sample", help="build the bundled example store from a made-up trader")
     s.add_argument("-d", "--database", default="examples/demo.rl")
@@ -35,10 +49,13 @@ def main(argv=None):
     v.add_argument("-o", "--output", default="tilt.html")
 
     q = sub.add_parser("ask", help="run one question, print JSON")
-    q.add_argument("name", choices=sorted(report.QUESTIONS))
+    q.add_argument("name", choices=sorted(report.ALL))
     q.add_argument("-d", "--database", default="tilt.rl")
 
     args = ap.parse_args(argv)
+    if args.cmd == "serve":
+        from . import server
+        return server.serve(args.database)
     conn = graph.open_store(args.database)
     try:
         if args.cmd == "ingest":
@@ -53,7 +70,15 @@ def main(argv=None):
             stats = graph.write(conn, address, pos, window=args.window, size_up=args.size_up)
             print(json.dumps({"fills": len(fills), **stats, "store": args.database}))
         elif args.cmd == "guard":
-            print(json.dumps(guard.check(conn, args.at or int(time.time() * 1000)), indent=1))
+            print(json.dumps(guard.check(conn, args.at or int(time.time() * 1000), args.wallet,
+                                         args.coin, args.side, args.notional), indent=1))
+        elif args.cmd == "cohort":
+            import secrets
+            addresses = cohort.pick(cohort.leaderboard(), args.wallets, seed=args.seed)
+            start = int((time.time() - args.days * 86400) * 1000)
+            cohort.fetch(addresses, start, args.cache, log=lambda m: print(m, file=sys.stderr))
+            stats = cohort.build(conn, args.cache, secrets.token_hex(8))
+            print(json.dumps({**stats, "store": args.database}))
         elif args.cmd == "sample":
             pos = positions.build_positions(sample.ADDRESS, sample.make_fills())
             stats = graph.write(conn, sample.ADDRESS, pos)
