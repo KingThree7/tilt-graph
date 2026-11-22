@@ -28,9 +28,10 @@ ORDER BY length(path) DESC LIMIT 1
 HABIT_Q = """
 MATCH (x:Pattern {name: $p})
 OPTIONAL MATCH (w:Wallet {address: $w})-[h:HAS_HABIT]->(x)
-RETURN x.meaning AS meaning, x.grade AS grade, x.tested_wallets AS tested_wallets,
-       x.win_pts AS win_pts, x.ret_bps AS ret_bps, x.later_half_ret_bps AS later_half_ret_bps,
-       x.share_of_net_result_pct AS share_of_net_result_pct, x.evidence_from AS evidence_from,
+RETURN x.meaning AS meaning, x.grade AS grade, x.wallets AS wallets, x.compared AS compared,
+       x.win_pts AS win_pts, x.ret_bps AS ret_bps, x.ret_t AS ret_t,
+       x.liq_per_1000 AS liq_per_1000, x.liq_t AS liq_t, x.later_ret_bps AS later_ret_bps,
+       x.later_liq_per_1000 AS later_liq_per_1000, x.evidence_from AS evidence_from,
        h.positions AS n, h.win_pct AS win_pct, h.pnl AS pnl, h.share AS share
 """
 PEER_HABIT_Q = """
@@ -100,10 +101,12 @@ def check(conn, now_ms, wallet=None, coin=None, side=None, notional=None,
         grade = h["grade"] or "untested"
         entry = {
             "pattern": name, "meaning": h["meaning"],
-            "evidence": {"grade": grade, "tested_on_wallets": h["tested_wallets"],
-                         "win_rate_change_pts": h["win_pts"], "return_change_bps": h["ret_bps"],
-                         "return_change_bps_on_later_data": h["later_half_ret_bps"],
-                         "share_of_all_net_losses_pct": h["share_of_net_result_pct"],
+            "evidence": {"grade": grade, "wallets_tested": h["wallets"], "compared": h["compared"],
+                         "win_rate_change_pts": h["win_pts"],
+                         "return_change_bps": h["ret_bps"], "return_t": h["ret_t"],
+                         "liquidations_change_per_1000": h["liq_per_1000"], "liquidations_t": h["liq_t"],
+                         "on_later_data": {"return_change_bps": h["later_ret_bps"],
+                                           "liquidations_change_per_1000": h["later_liq_per_1000"]},
                          "from": h["evidence_from"] or "this store"},
             "you": {"times": h["n"] or 0, "win_pct": h["win_pct"], "total_pnl": h["pnl"]},
         }
@@ -112,7 +115,7 @@ def check(conn, now_ms, wallet=None, coin=None, side=None, notional=None,
                                    "total_pnl": peer["pnl"],
                                    "peers_who_lost_on_it": peer["peers_who_lost_on_it"]}
         matches.append(entry)
-        if grade.startswith("solid: costs"):
+        if grade.startswith("solid"):
             solid.append(entry)
         elif grade == "untested":
             untested.append(entry)
@@ -131,11 +134,16 @@ def check(conn, now_ms, wallet=None, coin=None, side=None, notional=None,
     if solid:
         e = solid[0]
         ev, you = e["evidence"], e["you"]
-        reason = (f"This trade would be '{e['pattern']}': {e['meaning']} Across {ev['tested_on_wallets']} "
-                  f"wallets, each compared with itself, such positions returned {abs(ev['return_change_bps'])} "
-                  f"basis points less than the same trader's other positions, and "
-                  f"{abs(ev['return_change_bps_on_later_data'])} less on later data the rule had not seen. "
-                  f"They carry {ev['share_of_all_net_losses_pct']}% of all net losses.")
+        reason = (f"This trade would be '{e['pattern']}': {e['meaning']} Tested on {ev['wallets_tested']} "
+                  f"wallets, {ev['compared']}: ")
+        if ev["grade"].startswith("solid: costs"):
+            reason += (f"{abs(ev['return_change_bps'])} basis points less return "
+                       f"({abs(ev['on_later_data']['return_change_bps'])} on later data).")
+        else:
+            reason += (f"{ev['liquidations_change_per_1000']:+.0f} liquidations per 1,000 positions "
+                       f"({ev['on_later_data']['liquidations_change_per_1000']:+.0f} on later data), "
+                       f"with no reliable change in average return ({ev['return_change_bps']:+.0f} basis "
+                       "points). More small wins, more blow-ups.")
         if you["times"] >= min_own:
             reason += f" You did this {you['times']} times: total result {you['total_pnl']:+.2f}."
         out.update(verdict="WAIT", basis=ev["from"], reason=reason)

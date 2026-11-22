@@ -20,6 +20,8 @@ class Position:
     taker_share: float   # share of fills that crossed the spread
     liquidated: bool = False  # the exchange closed it
     adds_against: int = 0     # adds made at a worse price than the average entry: averaging down
+    entry_px: float = 0.0     # price of the first fill
+    first_notional: float = 0.0  # size of the first fill in USDC
     ladder: tuple = ()        # those adds, in order: (time ms, price, notional, % from average entry)
 
     @property
@@ -29,6 +31,7 @@ class Position:
     def row(self):
         d = asdict(self)
         d.pop("ladder")
+        d.pop("first_notional")
         d["minutes"] = round(self.minutes, 2)
         d["won"] = self.pnl > 0
         d["ret"] = round(self.pnl / self.max_notional, 5) if self.max_notional else 0.0
@@ -62,6 +65,7 @@ def build_positions(address, fills, under_water_pct=UNDER_WATER_PCT):
             cur = open_by_coin[coin] = dict(
                 coin=coin, side="long" if delta > 0 else "short", opened_at=f["time"],
                 pnl=0.0, fees=0.0, max_notional=0.0, fills=0, adds=0, takers=0, liq=False,
+                entry=px, first=abs(delta) * px,
                 against=0, avg=0.0, ladder=[])
         grows = abs(end) > abs(start) + EPS and start * end >= 0
         if grows and cur["fills"] > 0:
@@ -89,13 +93,15 @@ def build_positions(address, fills, under_water_pct=UNDER_WATER_PCT):
                 pnl=round(cur["pnl"] - cur["fees"], 4), fees=round(cur["fees"], 4),
                 max_notional=round(cur["max_notional"], 2), fills=cur["fills"], adds=cur["adds"],
                 taker_share=round(cur["takers"] / cur["fills"], 3), liquidated=cur["liq"],
-                adds_against=cur["against"], ladder=tuple(cur["ladder"])))
+                adds_against=cur["against"], entry_px=cur["entry"],
+                first_notional=round(cur["first"], 2), ladder=tuple(cur["ladder"])))
             del open_by_coin[coin]
             if crossed_zero:
                 # one fill closed the old position and opened the opposite one
                 open_by_coin[coin] = dict(
                     coin=coin, side="long" if end > 0 else "short", opened_at=f["time"],
                     pnl=0.0, fees=0.0, max_notional=abs(end) * px, fills=1, adds=0,
-                    takers=1 if f.get("crossed") else 0, liq=False, against=0, avg=px, ladder=[])
+                    takers=1 if f.get("crossed") else 0, liq=False, against=0, avg=px, ladder=[],
+                    entry=px, first=abs(end) * px)
     done.sort(key=lambda p: (p.opened_at, p.id))
     return done

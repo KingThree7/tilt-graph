@@ -1,7 +1,7 @@
 """One self-contained HTML page of what the graph holds. No server, no script, no network."""
 import html as _html
 
-from . import guard, report
+from . import guard, report, study
 
 CSS = """
 :root{--bg:#fbfaf7;--ink:#1c1b19;--mute:#6b675f;--line:#e2ded5;--card:#fff;--bad:#b3261e;--good:#1f7a4d;
@@ -60,7 +60,7 @@ def _table(rows, cols):
 
 def _chip(grade):
     grade = grade or "untested"
-    cls = ("solidbad" if grade.startswith("solid: costs") else "solidgood" if grade.startswith("solid")
+    cls = ("solidbad" if grade.startswith("solid") else "solidgood" if grade.startswith("good")
            else "weak" if grade.startswith("weak") else "none")
     return f'<span class="chip {cls}">{_e(grade.split(":")[0])}</span><br><span class="none">{_e(grade.partition(": ")[2])}</span>'
 
@@ -91,21 +91,37 @@ def html(conn, wallet=None):
 
     # 1. Evidence
     ev = _rows(conn, "MATCH (x:Pattern) RETURN x.name AS pattern, x.meaning AS meaning, x.grade AS grade, "
-                     "x.tested_wallets AS wallets, x.win_pts AS win_pts, x.ret_bps AS ret_bps, "
-                     "x.later_half_ret_bps AS later, x.share_of_positions_pct AS share, "
-                     "x.share_of_net_result_pct AS loss_share, x.evidence_from AS src ORDER BY x.ret_bps")
+                     "x.wallets AS wallets, x.win_pts AS win_pts, x.ret_bps AS ret_bps, x.liq_per_1000 AS liq, "
+                     "x.later_liq_per_1000 AS later_liq, x.share_of_positions_pct AS share, "
+                     "x.compared AS compared, x.evidence_from AS src ORDER BY x.liq_per_1000 DESC")
     for r in ev:
-        r["name_html"] = f"<b>{_e(r['pattern'])}</b><br><span class='none'>{_e(r['meaning'])}</span>"
+        r["name_html"] = (f"<b>{_e(r['pattern'])}</b><br><span class='none'>{_e(r['meaning'])}<br>"
+                          f"Compared {_e(r['compared'] or '')}.</span>")
         r["grade_html"] = _chip(r["grade"])
     src = next((r["src"] for r in ev if r["src"]), "this store")
-    parts += ["<h2>Which habits cost money</h2>",
-              "<p class='lead'>Each wallet is compared with itself: its positions that show a habit against "
-              "its other positions. A habit is called solid only if the difference also holds on the later "
-              f"half of every wallet's history. Evidence from: {_e(src)}.</p>",
+    parts += ["<h2>Which habits hurt</h2>",
+              "<p class='lead'>Each wallet is compared with itself, never with other wallets. A habit is "
+              "called solid only if the difference shows again on the later half of every wallet's history. "
+              f"Evidence from: {_e(src)}.</p>",
               _table(ev, [("name_html", "Habit", 0), ("grade_html", "Evidence", 0), ("wallets", "Wallets", 0),
-                          ("win_pts", "Win rate", 1), ("ret_bps", "Return bps", 1),
-                          ("later", "Later data bps", 1), ("share", "% of positions", 1),
-                          ("loss_share", "% of net result", 1)])]
+                          ("win_pts", "Win rate, pts", 1), ("ret_bps", "Return, bps", 1),
+                          ("liq", "Liquidations per 1,000", 1), ("later_liq", "Same, later data", 1),
+                          ("share", "% of positions", 1)])]
+
+    bands = study.under_water(conn)
+    if bands:
+        parts += ["<h2>Under water: add, or do not add?</h2>",
+                  "<p class='lead'>Positions that stood this far against their entry with no add so far all "
+                  "faced the same decision. Some were added to at that depth, the others were not. Adding "
+                  "wins more often, returns about the same, and is closed by force far more often. The last "
+                  "two columns compare simply closing at that depth with what holding on led to.</p>",
+                  _table(bands, [("under_water_pct", "% under water", 0), ("reached_it", "Positions", 0),
+                                 ("added_there", "Added there", 0), ("added_win_pct", "Win % added", 1),
+                                 ("did_not_win_pct", "Win % not", 1), ("added_return_bps", "Return added", 1),
+                                 ("did_not_return_bps", "Return not", 1),
+                                 ("added_liq_per_1000", "Liq. added", 1), ("did_not_liq_per_1000", "Liq. not", 1),
+                                 ("closing_there_bps", "Close there", 0),
+                                 ("holding_on_ended_at_bps", "Held on", 1)])]
 
     # 2. The guard's own track record
     track = _rows(conn, "MATCH (v:Verdict) WHERE v.positions IS NOT NULL RETURN v.name AS said, "
@@ -114,9 +130,11 @@ def html(conn, wallet=None):
     if track:
         parts += ["<h2>Does the guard's advice hold up</h2>",
                   f"<p class='lead'>The rule was learned on the first half of every wallet's history "
-                  f"(it came out as: <b>{_e(track[0]['rule'] or 'nothing')}</b>). Then every position in the "
-                  "second half got the verdict that rule gives. Advice and outcome sit side by side in the "
-                  "graph as <code>(:Position)-[:GUARD_SAID]-&gt;(:Verdict)</code>.</p>",
+                  f"(it came out as: <b>{_e(track[0]['rule'] or 'nothing')}</b>). On the second half, every "
+                  "position that reached the same decision got a verdict: WAIT where the habit was followed, "
+                  "GO where it was not. Advice and outcome sit side by side in the graph as "
+                  "<code>(:Position)-[:GUARD_SAID]-&gt;(:Verdict)</code>. The guard does not claim more "
+                  "than this table shows.</p>",
                   _table(track, [("said", "Guard said", 0), ("positions", "Positions", 0), ("win_pct", "Win %", 1),
                                  ("ret", "Avg return, bps", 1), ("liq", "Liquidated per 1,000", 1)])]
 
@@ -131,7 +149,7 @@ def html(conn, wallet=None):
     if ladder:
         top = max(r["liq"] for r in ladder) or 1
         parts += ["<h2>The ladder</h2>",
-                  "<p class='lead'>Every add made with the price at least 1% past the average entry is a node. The adds "
+                  "<p class='lead'>Every add made at least 1% under water is a node. The adds "
                   "of one position form a chain. How deep the chain went, against how often the exchange "
                   "closed the position by force (liquidations per 1,000 positions).</p>"]
         for r in ladder:
@@ -187,7 +205,7 @@ def html(conn, wallet=None):
                    [n IN reverse(ns) | n.coin + ' ' + n.side] AS sequence ORDER BY pnl LIMIT 3""", {"w": w})
         if spirals:
             parts.append("<p class='lead'>Its worst loss spirals: positions each opened within 30 minutes after "
-                         "the previous loss. The evidence says this habit lowers the win rate a little and "
+                         "the previous loss. The evidence above says this lowers the win rate a little and "
                          "does not, on average, cost money. It is shown, not judged.</p>")
             for s in spirals:
                 boxes = "<span class='arrow'>→</span>".join(f"<span class='node'>{_e(x)}</span>" for x in s["sequence"])

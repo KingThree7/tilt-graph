@@ -1,10 +1,11 @@
 """Command line: python -m tiltgraph ingest|report|ask ..."""
 import argparse
 import json
+import os
 import sys
 import time
 
-from . import cohort, graph, guard, hl, positions, report, sample, study, view
+from . import candles, cohort, graph, guard, hl, positions, report, sample, study, view
 
 
 def main(argv=None):
@@ -18,6 +19,7 @@ def main(argv=None):
     a.add_argument("--window", type=float, default=15, help="minutes that count as 'right after'")
     a.add_argument("--size-up", type=float, default=1.5)
     a.add_argument("--fills", help="read fills from a JSON file instead of the network")
+    a.add_argument("--cache", default=".tilt-cache", help="folder for downloaded candles")
 
     r = sub.add_parser("report", help="print the report as markdown")
     r.add_argument("-d", "--database", default="tilt.rl")
@@ -78,7 +80,13 @@ def main(argv=None):
                 start = int((time.time() - args.days * 86400) * 1000)
                 fills = hl.fetch_fills(address, start)
             pos = positions.build_positions(address, fills)
-            stats = graph.write(conn, address, pos, window=args.window, size_up=args.size_up)
+            series = candles.from_fills(fills)
+            if not args.fills:  # real candles, so the worst move of every position is known
+                folder = os.path.join(args.cache, "candles")
+                candles.fetch(sorted({p.coin for p in pos}), start, folder)
+                series = candles.load(folder)
+            stats = graph.write(conn, address, pos, window=args.window, size_up=args.size_up,
+                                worst=candles.worst_moves(series, pos))
             print(json.dumps({"fills": len(fills), **stats, "store": args.database}))
         elif args.cmd == "guard":
             adding, open_pos = args.adding_to_loser, None
@@ -96,18 +104,23 @@ def main(argv=None):
             if args.export:
                 study.export(conn)
             print(report.table(rows))
+            print(report.table(study.under_water(conn)))
             print("Rule learned on the first half of every wallet:", audit["rule_learned_on_first_half"])
             print(report.table(audit["result_on_second_half"]))
         elif args.cmd == "cohort":
             import secrets
             addresses = cohort.pick(cohort.leaderboard(), args.wallets, seed=args.seed)
             start = int((time.time() - args.days * 86400) * 1000)
-            cohort.fetch(addresses, start, args.cache, log=lambda m: print(m, file=sys.stderr))
-            stats = cohort.build(conn, args.cache, secrets.token_hex(8))
+            fills_dir, candle_dir = os.path.join(args.cache, "fills"), os.path.join(args.cache, "candles")
+            cohort.fetch(addresses, start, fills_dir, log=lambda m: print(m, file=sys.stderr))
+            candles.fetch(cohort.coins(fills_dir), start, candle_dir)
+            stats = cohort.build(conn, fills_dir, secrets.token_hex(8), candle_dir=candle_dir)
             print(json.dumps({**stats, "store": args.database}))
         elif args.cmd == "sample":
-            pos = positions.build_positions(sample.ADDRESS, sample.make_fills())
-            stats = graph.write(conn, sample.ADDRESS, pos)
+            fills = sample.make_fills()
+            pos = positions.build_positions(sample.ADDRESS, fills)
+            stats = graph.write(conn, sample.ADDRESS, pos,
+                                worst=candles.worst_moves(candles.from_fills(fills), pos))
             print(json.dumps({**stats, "store": args.database}))
         elif args.cmd == "view":
             with open(args.output, "w") as fh:

@@ -65,9 +65,10 @@ def fetch(addresses, start_ms, cache_dir, pause=1.1, max_pages=3, log=print):
 
 
 def build(conn, cache_dir, salt, min_positions=20, max_fills=5500, window=15, size_up=1.5, limit=None,
-          log=print):
+          candle_dir=None, log=print):
     """Fold every cached wallet into positions and write them all into one store."""
-    from . import graph, positions as pos
+    from . import candles, graph, positions as pos
+    series = candles.load(candle_dir) if candle_dir else {}
     kept = dropped = total = 0
     for name in sorted(os.listdir(cache_dir)):
         if not name.endswith(".json"):
@@ -82,7 +83,7 @@ def build(conn, cache_dir, salt, min_positions=20, max_fills=5500, window=15, si
         if len(closed) < min_positions:
             dropped += 1
             continue
-        graph.write(conn, key, closed, derive_now=False)
+        graph.write(conn, key, closed, derive_now=False, worst=candles.worst_moves(series, closed))
         kept += 1
         total += len(closed)
         if limit and kept >= limit:
@@ -90,3 +91,17 @@ def build(conn, cache_dir, salt, min_positions=20, max_fills=5500, window=15, si
     out = {"wallets": kept, "dropped": dropped, "positions": total}
     out.update(graph.derive(conn, window=window, size_up=size_up))
     return out
+
+
+def coins(cache_dir, max_fills=5500, min_positions=5):
+    """The coins worth fetching candles for: traded in at least a few positions of the cohort."""
+    from . import positions as pos
+    seen = {}
+    for name in os.listdir(cache_dir):
+        with open(os.path.join(cache_dir, name)) as fh:
+            fills = json.load(fh)
+        if len(fills) >= max_fills:
+            continue
+        for p in pos.build_positions("x", fills):
+            seen[p.coin] = seen.get(p.coin, 0) + 1
+    return [c for c, n in sorted(seen.items(), key=lambda kv: -kv[1]) if n >= min_positions]

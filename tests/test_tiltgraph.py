@@ -1,4 +1,4 @@
-from tiltgraph import graph, guard, positions, report, sample, study
+from tiltgraph import candles, graph, guard, positions, report, sample, study
 
 A = "0xabc0000000"
 
@@ -39,10 +39,15 @@ def test_still_open_position_and_spot_are_left_out():
     assert positions.build_positions(A, fills) == []
 
 
+def _worst(fills, pos):
+    return candles.worst_moves(candles.from_fills(fills), pos)
+
+
 def _store():
     conn = graph.open_store(":memory:")
-    pos = positions.build_positions(sample.ADDRESS, sample.make_fills())
-    graph.write(conn, sample.ADDRESS, pos)
+    fills = sample.make_fills()
+    pos = positions.build_positions(sample.ADDRESS, fills)
+    graph.write(conn, sample.ADDRESS, pos, worst=_worst(fills, pos))
     return conn, pos
 
 
@@ -97,7 +102,7 @@ def test_guard_waits_only_for_a_habit_with_solid_evidence():
     now = lost["t"] + 3 * 60000
     add = guard.check(conn, now, adding_to_loser=True)
     assert add["verdict"] == "WAIT"
-    assert add["planned_trade_matches"][0]["evidence"]["grade"].startswith("solid: costs")
+    assert add["planned_trade_matches"][0]["evidence"]["grade"].startswith("solid")
     assert add["guard_track_record"]["rows"]
     # revenge alone has only weak evidence: the guard says so, and does not say WAIT
     quick = guard.check(conn, now, coin=lost["coin"], side="long")
@@ -142,17 +147,30 @@ def _cohort(wallets=40):
     conn = graph.open_store(":memory:")
     for i in range(wallets):
         key = f"w_{i:03d}"
-        pos = positions.build_positions(key, sample.make_fills(seed=100 + i, days=45))
-        graph.write(conn, key, pos, derive_now=False)
+        fills = sample.make_fills(seed=100 + i, days=45)
+        pos = positions.build_positions(key, fills)
+        graph.write(conn, key, pos, derive_now=False, worst=_worst(fills, pos))
     graph.derive(conn)
     return conn
 
 
-def test_study_finds_the_costly_habit_and_audits_itself():
+def test_study_judges_adding_at_the_decision_point_and_audits_itself():
     conn = _cohort()
     rows = {r["pattern"]: r for r in study.evidence(conn, write=False)}
-    assert rows["average_down"]["grade"].startswith("solid: costs")
+    down = rows["average_down"]
+    assert down["grade"].startswith("solid") and down["liq_per_1000"] > 0
+    assert "equally far under water" in down["compared"]
+    bands = study.under_water(conn)
+    assert bands and bands[0]["added_liq_per_1000"] > bands[0]["did_not_liq_per_1000"]
     audit = {r["guard_said"]: r for r in study.audit(conn)["result_on_second_half"]}
-    assert audit["WAIT"]["avg_return_bps"] < audit["GO"]["avg_return_bps"]
+    assert audit["WAIT"]["liquidated_per_1000"] > audit["GO"]["liquidated_per_1000"]
     peers = conn.execute("MATCH (:Wallet)-[e:PEER_OF]->(:Wallet) RETURN count(e) AS c").single()["c"]
     assert peers == 40 * 8
+
+
+def test_worst_move_comes_from_prices_seen_while_the_position_was_open():
+    fills = [f("ETH", "B", 3000, 1, 0, 0, 1000, 1), f("ETH", "B", 2940, 1, 1, 0, 2000, 2),
+             f("ETH", "A", 2910, 2, 2, -120, 3000, 3)]
+    (p,) = positions.build_positions("0xabc", fills)
+    assert _worst(fills, [p])[p.id] == 3.0          # 2910 is 3% under the entry at 3000
+    assert p.adds_against == 1 and p.ladder[0][3] == 2.0

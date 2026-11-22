@@ -8,7 +8,7 @@ Shape of the graph:
   (:Position)-[:TILTED_FROM]->(:Position)             opened within 30 min after that loss
   (:Position)-[:OPENED_IN]->(:State)                  the situation it was opened in
   (:Position)-[:SHOWS]->(:Pattern)                    revenge, size_up, flip, chase,
-                                                      average_down, pyramid
+                                                      average_down
   (:Position)-[:AVERAGED_DOWN]->(:Add)-[:THEN]->(:Add)  the ladder of adds against the position
   (:Wallet)-[:HAS_HABIT {positions, share, win_pct, avg_ret, pnl}]->(:Pattern)
   (:Wallet)-[:PEER_OF {score}]->(:Wallet)             nearest wallets by habit vector
@@ -37,7 +37,6 @@ PATTERNS = {
     "flip": "Opened the opposite side on the same coin within {window} minutes after a loss.",
     "chase": "Re-entered the same coin and side within {window} minutes after a loss.",
     "average_down": "Added to the position while it was at least 1% under water.",
-    "pyramid": "Added to the position, but never while it was 1% or more under water.",
 }
 
 # The situation a position is opened in: what just closed, and how long ago.
@@ -73,14 +72,18 @@ def state_name(prev_won, gap_min):
     return "calm"
 
 
-def write(conn, address, positions, window=15, size_up=1.5, lookback_hours=24, derive_now=True):
+def write(conn, address, positions, window=15, size_up=1.5, lookback_hours=24, derive_now=True,
+          worst=None):
     """Idempotent: running it again on the same store updates, never duplicates.
 
     With many wallets, pass derive_now=False and call derive() once at the end.
+    worst: {position id: largest move against the entry in %}, from candles, when available.
     """
     rows = []
     for p in positions:
         r = p.row()
+        r["first_add_pct"] = p.ladder[0][3] if p.ladder else None
+        r["worst_move_pct"] = (worst or {}).get(p.id)
         r["hour"] = dt.datetime.fromtimestamp(p.opened_at / 1000, dt.timezone.utc).hour
         rows.append(r)
 
@@ -94,7 +97,9 @@ def write(conn, address, positions, window=15, size_up=1.5, lookback_hours=24, d
                 p.closed_at = r.closed_at, p.pnl = r.pnl, p.fees = r.fees,
                 p.max_notional = r.max_notional, p.fills = r.fills, p.adds = r.adds,
                 p.taker_share = r.taker_share, p.minutes = r.minutes, p.won = r.won,
-                p.hour = r.hour, p.ret = r.ret, p.liquidated = r.liquidated, p.adds_against = r.adds_against, p.wallet = $a
+                p.hour = r.hour, p.ret = r.ret, p.liquidated = r.liquidated, p.adds_against = r.adds_against, p.wallet = $a,
+                p.entry_px = r.entry_px, p.first_add_pct = r.first_add_pct,
+                p.worst_move_pct = r.worst_move_pct
             MERGE (c:Coin {name: r.coin})
             MERGE (p)-[:ON]->(c)
             WITH p
@@ -164,7 +169,7 @@ def derive(conn, window=15, size_up=1.5, peers=8, min_positions=20, spiral_gap=3
                  {"w": window, "n": "chase"})
 
     conn.execute("MATCH (p:Position) WHERE p.adds_against >= 1 WITH p " + tag, {"n": "average_down"})
-    conn.execute("MATCH (p:Position) WHERE p.adds >= 1 AND p.adds_against = 0 WITH p " + tag, {"n": "pyramid"})
+    conn.execute("MATCH (x:Pattern) WHERE NOT x.name IN $names DETACH DELETE x", {"names": list(PATTERNS)})
 
     # 1b. TILTED_FROM: the loss-then-quick-reentry link that spirals are made of.
     conn.execute("MATCH (:Position)-[t:TILTED_FROM]->(:Position) DELETE t")
