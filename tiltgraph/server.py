@@ -37,6 +37,10 @@ Relationships
   (:Position)-[:GUARD_SAID {because}]->(:Verdict)          replayed advice, next to the outcome
   (:Wallet)-[:HAS_HABIT {positions, share, win_pct, avg_ret, pnl}]->(:Pattern)
   (:Wallet)-[:PEER_OF {score}]->(:Wallet)                  nearest by habit vector
+  (:Question {name, title, cypher})                        prepared questions, full-text index question_text
+Vector indexes: wallet_habit on Wallet.habit (8 numbers, cosine), position_moment on
+Position.moment (7 numbers, euclidean, filterable by wallet and closed_at). Query them with
+  MATCH (p:Position) SEARCH p IN (VECTOR INDEX position_moment FOR $v WHERE p.wallet = $w LIMIT 20) SCORE AS score
 Times are milliseconds since epoch, UTC. pnl is in USDC after fees. ret is pnl / max_notional."""
 
 
@@ -110,6 +114,26 @@ def build(database):
                    "p.win_pct AS win_pct, p.pnl AS pnl, h.share AS revenge_share, h.pnl AS revenge_pnl "
                    "ORDER BY e.score DESC", {"w": w})}
         return with_store(run)
+
+    @app.tool()
+    def similar_moments(wallet: str = "", coin: str = "", side: str = "", notional: float = 0.0,
+                        at_ms: int = 0) -> dict:
+        """The moments in the store that looked most like this one, found by vector search over
+        Position.moment, and how they ended: for all wallets and for this wallet alone. A
+        description of what happened next, not a tested rule."""
+        now = at_ms or int(time.time() * 1000)
+        out = with_store(lambda c: guard.similar(c, now, wallet or None, coin or None, side or None,
+                                                 notional or None))
+        return out or {"note": "nothing closed before this moment, or the store has no moment index"}
+
+    @app.tool()
+    def find_question(text: str, limit: int = 3) -> dict:
+        """Find the prepared questions that fit a few words (full-text index over Question nodes).
+        Run the one you want with ask(name)."""
+        return {"questions": with_store(lambda c: _rows(
+            c, "MATCH (q:Question) SEARCH q IN (FULLTEXT INDEX question_text FOR $t LIMIT %d) "
+               "SCORE AS score RETURN q.name AS name, q.title AS title, round(score, 2) AS score"
+               % max(1, min(int(limit), 10)), {"t": text}))}
 
     @app.tool()
     def spirals(wallet: str = "", limit: int = 5) -> dict:

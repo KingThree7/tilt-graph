@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Tilt Graph: ask the graph</title>
+<style>
+:root{--bg:#fbfaf7;--ink:#1c1b19;--mute:#6b675f;--line:#e2ded5;--card:#fff;--bad:#b3261e;--good:#1f7a4d;--accent:#2f4f8f}
+@media (prefers-color-scheme:dark){:root{--bg:#151412;--ink:#ece8df;--mute:#a09a8e;--line:#34312b;--card:#1e1c19;--bad:#ff8a80;--good:#7bd3a4;--accent:#9db8f2}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}
+main{max-width:1040px;margin:0 auto;padding:32px 16px 80px}
+h1{font-size:32px;line-height:1.15;margin:0 0 8px;letter-spacing:-.02em}h2{font-size:19px;margin:32px 0 8px}
+p{max-width:72ch}.mute{color:var(--mute)}a{color:var(--accent)}
+#status{display:inline-block;padding:4px 12px;border-radius:99px;border:1px solid var(--line);background:var(--card);font-size:14px}
+.qs{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0}
+button{font:inherit;font-size:14px;padding:8px 12px;border-radius:10px;border:1px solid var(--line);background:var(--card);color:var(--ink);cursor:pointer;text-align:left}
+button:hover{border-color:var(--accent)}button.on{border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent)}
+button.run{background:var(--accent);color:var(--bg);border-color:var(--accent);font-weight:600}
+textarea{width:100%;min-height:210px;font:13px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;padding:12px;border-radius:12px;border:1px solid var(--line);background:var(--card);color:var(--ink);resize:vertical}
+.scroll{overflow-x:auto;border:1px solid var(--line);border-radius:12px;background:var(--card);margin-top:12px}
+table{border-collapse:collapse;width:100%;font-size:14px}th,td{padding:8px 10px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--mute);font-size:12px;text-transform:uppercase;letter-spacing:.04em}tr:last-child td{border-bottom:0}
+td.n{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}.neg{color:var(--bad)}
+.err{color:var(--bad);white-space:pre-wrap;font:13px ui-monospace,Menlo,monospace}
+#title{font-weight:600;margin:14px 0 6px}
+</style></head><body><main>
+<p class="mute"><a href="./">← Tilt Graph, the cohort of 657 real wallets</a></p>
+<h1>Ask the graph, in your browser</h1>
+<p>This page loads the made-up example trader (137 positions) into <a href="https://relatedb.ai">Relate</a>
+compiled to WebAssembly. The database runs inside this tab. Nothing is sent anywhere, and the Cypher below is
+the same Cypher the Python tool runs against the <code>.rl</code> file. Pick a question, or write your own.</p>
+<p><span id="status">Loading the engine…</span></p>
+<h2>Prepared questions</h2>
+<div class="qs" id="qs"></div>
+<div id="title"></div>
+<textarea id="q" spellcheck="false" aria-label="Cypher"></textarea>
+<p><button class="run" id="run" disabled>Run</button> <span class="mute" id="took"></span></p>
+<div id="out"></div>
+<h2>Shape of the graph</h2>
+<pre class="scroll" style="padding:12px 14px;font:13px/1.5 ui-monospace,Menlo,monospace">(:Wallet)-[:TRADED]->(:Position)-[:ON]->(:Coin)
+(:Position)-[:OPENED_AFTER {gap_min, size_ratio}]->(:Position)    what had just closed
+(:Position)-[:TILTED_FROM]->(:Position)                           opened within 30 min after that loss
+(:Position)-[:OPENED_IN]->(:State)                                the situation it was opened in
+(:Position)-[:SHOWS]->(:Pattern {grade, ...})                     the habit, with its evidence
+(:Position)-[:AVERAGED_DOWN]->(:Add)-[:THEN]->(:Add)              the ladder of adds under water
+(:Wallet)-[:HAS_HABIT {positions, win_pct, pnl}]->(:Pattern)
+(:Position {moment})                                              7 numbers, vector index position_moment
+(:Question {name, title, cypher})                                 full-text index question_text</pre>
+</main>
+<script type="module">
+import init, { RelateDb } from "./relate/relate.js";
+const $ = id => document.getElementById(id);
+const status = t => { $("status").textContent = t; };
+let db;
+const exec = (q, params) => {
+  const r = JSON.parse(db.execute(q, params ? JSON.stringify(params) : null));
+  if (r.error) throw new Error(r.error);
+  return r;
+};
+const esc = s => String(s).replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
+const cell = v => {
+  if (v === null || v === undefined) return "<td class='mute'>–</td>";
+  if (typeof v === "number") return `<td class="n ${v < 0 ? "neg" : ""}">${Number.isInteger(v) ? v.toLocaleString("en") : v.toLocaleString("en", {maximumFractionDigits: 4})}</td>`;
+  if (Array.isArray(v)) return `<td>${v.map(x => esc(typeof x === "object" ? JSON.stringify(x) : x)).join("<br>")}</td>`;
+  if (typeof v === "object") return `<td>${esc(JSON.stringify(v))}</td>`;
+  return `<td>${esc(v)}</td>`;
+};
+function run() {
+  const t0 = performance.now();
+  try {
+    const r = exec($("q").value);
+    const ms = (performance.now() - t0).toFixed(1);
+    $("took").textContent = `${r.rows.length} row${r.rows.length === 1 ? "" : "s"} in ${ms} ms, inside this tab`;
+    $("out").innerHTML = r.rows.length
+      ? `<div class="scroll"><table><tr>${r.columns.map(c => `<th>${esc(c)}</th>`).join("")}</tr>` +
+        r.rows.slice(0, 200).map(row => `<tr>${r.columns.map(c => cell(row[c])).join("")}</tr>`).join("") + "</table></div>"
+      : "<p class='mute'>No rows.</p>";
+  } catch (e) { $("took").textContent = ""; $("out").innerHTML = `<p class="err">${esc(e.message)}</p>`; }
+}
+async function boot() {
+  await init();
+  db = new RelateDb();
+  status("Loading the example trader…");
+  const g = await (await fetch("./demo-graph.json")).json();
+  const t0 = performance.now();
+  let nodes = 0, rels = 0;
+  for (const [label, rows] of Object.entries(g.nodes)) {
+    exec(`CREATE RANGE INDEX k_${label} IF NOT EXISTS FOR (n:${label}) ON (n._k)`);
+    const vec = g.vectors[label];
+    for (let i = 0; i < rows.length; i += 200) {
+      const part = rows.slice(i, i + 200);
+      exec(`UNWIND $rows AS r CREATE (n:${label}) SET n = r` +
+           (vec ? ` SET n.${vec[0]} = CASE WHEN r.${vec[0]} IS NULL THEN null ELSE vector(r.${vec[0]}, ${vec[1]}, FLOAT32) END` : ""),
+           {rows: part});
+      nodes += part.length;
+    }
+  }
+  for (const [key, rows] of Object.entries(g.rels)) {
+    const [type, la, lb] = key.split("|");
+    for (let i = 0; i < rows.length; i += 200) {
+      const part = rows.slice(i, i + 200);
+      exec(`UNWIND $rows AS r MATCH (a:${la} {_k: r[0]}), (b:${lb} {_k: r[1]}) CREATE (a)-[e:${type}]->(b) SET e = r[2]`, {rows: part});
+      rels += part.length;
+    }
+  }
+  for (const stmt of g.indexes) exec(stmt);
+  status(`Relate (WebAssembly) is running in this tab: ${nodes.toLocaleString("en")} nodes, ${rels.toLocaleString("en")} relationships, loaded in ${Math.round(performance.now() - t0)} ms.`);
+  const pick = (q, b) => {
+    document.querySelectorAll("#qs button").forEach(x => x.classList.remove("on"));
+    b.classList.add("on"); $("title").textContent = q.title; $("q").value = q.cypher; run();
+  };
+  g.questions.forEach((q, i) => {
+    const b = document.createElement("button");
+    b.textContent = q.name.replace(/_/g, " "); b.title = q.title; b.onclick = () => pick(q, b);
+    $("qs").appendChild(b);
+    if (i === 0) pick(q, b);
+  });
+  $("run").disabled = false; $("run").onclick = run;
+  $("q").addEventListener("keydown", e => { if ((e.metaKey || e.ctrlKey) && e.key === "Enter") run(); });
+  window.__ready = true;
+}
+boot().catch(e => { status("Could not start: " + e.message); window.__ready = "error"; });
+</script></body></html>

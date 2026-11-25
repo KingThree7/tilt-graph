@@ -12,13 +12,46 @@ The guard never predicts a price. It walks the graph:
   6. last position -> TILTED_FROM chain        am I already inside a loss spiral
   7. Verdict nodes                             how the guard's own advice did on data it had
                                                never seen
+  8. vector index over Position.moment         the most similar moments in the store, of this
+                                               wallet and of everyone, and how those ended
 
 WAIT is only said for a habit graded "solid: costs money". A habit with weak evidence gets a
 note, not a verdict. Every answer carries the Cypher behind it, so the claim can be checked.
 """
 import datetime as dt
 
-from .graph import state_name
+from .graph import state_name, moment_vector, MOMENT_FEATURES
+
+# Nearest moments by vector search, filtered inside the index to what was already closed, then
+# joined to the habit they showed. Similarity and structure in one statement.
+SIMILAR_Q = """
+MATCH (p:Position)
+SEARCH p IN (VECTOR INDEX position_moment FOR $v WHERE p.closed_at <= $now LIMIT 200) SCORE AS score
+OPTIONAL MATCH (p)-[:SHOWS]->(x:Pattern {name: 'average_down'})
+RETURN count(p) AS moments, count(DISTINCT p.wallet) AS wallets,
+       round(100.0 * sum(CASE WHEN p.won THEN 1 ELSE 0 END) / count(p), 1) AS win_pct,
+       round(avg(p.ret) * 10000, 0) AS avg_return_bps,
+       round(1000.0 * sum(CASE WHEN p.liquidated THEN 1 ELSE 0 END) / count(p), 0) AS liquidated_per_1000,
+       round(100.0 * count(x) / count(p), 1) AS later_added_under_water_pct,
+       round(min(score), 3) AS least_similar_score
+"""
+SIMILAR_OWN_Q = """
+MATCH (p:Position)
+SEARCH p IN (VECTOR INDEX position_moment FOR $v WHERE p.wallet = $w AND p.closed_at <= $now LIMIT 20)
+SCORE AS score
+RETURN count(p) AS moments,
+       round(100.0 * sum(CASE WHEN p.won THEN 1 ELSE 0 END) / count(p), 1) AS win_pct,
+       round(avg(p.ret) * 10000, 0) AS avg_return_bps, round(sum(p.pnl), 2) AS total_pnl,
+       sum(CASE WHEN p.liquidated THEN 1 ELSE 0 END) AS liquidated,
+       round(min(score), 3) AS least_similar_score
+"""
+BASE_Q = """
+MATCH (p:Position) WHERE p.closed_at <= $now
+RETURN count(p) AS positions,
+       round(100.0 * sum(CASE WHEN p.won THEN 1 ELSE 0 END) / count(p), 1) AS win_pct,
+       round(avg(p.ret) * 10000, 0) AS avg_return_bps,
+       round(1000.0 * sum(CASE WHEN p.liquidated THEN 1 ELSE 0 END) / count(p), 0) AS liquidated_per_1000
+"""
 
 CHAIN_Q = """
 MATCH path = (last:Position {id: $id})-[:TILTED_FROM]->*(first:Position)
@@ -62,15 +95,57 @@ def _wallet(conn, wallet):
     raise ValueError("this store holds several wallets: say which one")
 
 
+def similar(conn, now_ms, wallet=None, coin=None, side=None, notional=None, last=None, streak=None):
+    """The moments in the store that looked most like this one, and how they ended.
+
+    A description, not a test: it never changes the verdict. Returns None when the store has no
+    moment index (an older store) or nothing closed before now_ms.
+    """
+    wallet = _wallet(conn, wallet)
+    if last is None:
+        last = conn.execute(LAST_Q, {"w": wallet, "now": now_ms}).fetchone()
+    if last is None:
+        return None
+    gap = (now_ms - last["closed_at"]) / 60000
+    if streak is None:
+        streak = 0
+        if not last["won"] and gap < 30:
+            row = conn.execute(CHAIN_Q, {"id": last["id"]}).fetchone()
+            streak = len(row["chain"]) if row else 1
+    ratio = notional / last["max_notional"] if notional and last["max_notional"] else None
+    v = moment_vector(last["won"], gap, ratio, bool(coin) and coin == last["coin"],
+                      bool(side) and side == last["side"], streak, last["ret"])
+    params = {"v": v, "now": now_ms, "w": wallet}
+    try:
+        near = conn.execute(SIMILAR_Q, params).fetchone()
+        own = conn.execute(SIMILAR_OWN_Q, params).fetchone()
+    except Exception:
+        return None
+    if near is None or not near["moments"]:
+        return None
+    out = {"what": "the 200 moments closest to this one by vector search over Position.moment "
+                   "(what had just closed, how long ago, size against it, same coin and side, "
+                   "losses in a row). A description of what happened next, not a tested rule.",
+           "this_moment": dict(zip(MOMENT_FEATURES, v)),
+           "all_wallets": dict(near),
+           "every_position_before_now": dict(conn.execute(BASE_Q, params).fetchone())}
+    if own is not None and own["moments"]:
+        out["you"] = dict(own)
+    out["cypher"] = SIMILAR_Q.strip()
+    return out
+
+
+LAST_Q = ("MATCH (:Wallet {address: $w})-[:TRADED]->(p:Position) WHERE p.closed_at <= $now "
+          "RETURN p.id AS id, p.coin AS coin, p.side AS side, p.pnl AS pnl, p.won AS won, p.ret AS ret, "
+          "p.closed_at AS closed_at, p.max_notional AS max_notional "
+          "ORDER BY p.closed_at DESC LIMIT 1")
+
+
 def check(conn, now_ms, wallet=None, coin=None, side=None, notional=None,
           adding_to_loser=False, min_own=8):
     """adding_to_loser: the planned trade adds to an open position that is under water."""
     wallet = _wallet(conn, wallet)
-    last = conn.execute(
-        "MATCH (:Wallet {address: $w})-[:TRADED]->(p:Position) WHERE p.closed_at <= $now "
-        "RETURN p.id AS id, p.coin AS coin, p.side AS side, p.pnl AS pnl, p.won AS won, "
-        "p.closed_at AS closed_at, p.max_notional AS max_notional "
-        "ORDER BY p.closed_at DESC LIMIT 1", {"w": wallet, "now": now_ms}).fetchone()
+    last = conn.execute(LAST_Q, {"w": wallet, "now": now_ms}).fetchone()
     out = {"wallet": wallet, "now": _iso(now_ms)}
     gap, state = None, "calm"
     if last is not None:
@@ -162,6 +237,12 @@ def check(conn, now_ms, wallet=None, coin=None, side=None, notional=None,
             reason += (f" You are {out['spiral']['losses_in_a_row']} losses deep in a row; the evidence "
                        "says that lowers the win rate a little, not the result.")
         out.update(verdict="GO", basis="evidence in this store", reason=reason)
+
+    if last is not None:
+        near = similar(conn, now_ms, wallet, coin, side, notional, last=last,
+                       streak=out["spiral"]["losses_in_a_row"] if "spiral" in out else None)
+        if near:
+            out["similar_moments"] = near
 
     track = [dict(r) for r in conn.execute(TRACK_Q)]
     if track:

@@ -22,4 +22,4 @@ build-backend = "setuptools.build_meta"
 packages = ["tiltgraph"]
 
 [tool.setuptools.package-data]
-tiltgraph = ["evidence.json"]
+tiltgraph = ["evidence.json", "web_page.html"]

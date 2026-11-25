@@ -5,7 +5,7 @@ import os
 import sys
 import time
 
-from . import candles, cohort, graph, guard, hl, positions, report, sample, study, view
+from . import candles, cohort, graph, guard, hl, positions, report, sample, study, view, web
 
 
 def main(argv=None):
@@ -56,6 +56,10 @@ def main(argv=None):
     s = sub.add_parser("sample", help="build the bundled example store from a made-up trader")
     s.add_argument("-d", "--database", default="examples/demo.rl")
 
+    wb = sub.add_parser("web", help="write a page that runs the store in the browser (Relate WASM)")
+    wb.add_argument("-d", "--database", default="examples/demo.rl")
+    wb.add_argument("-o", "--out", default="docs")
+
     v = sub.add_parser("view", help="write a self-contained HTML page of the report")
     v.add_argument("-d", "--database", default="tilt.rl")
     v.add_argument("-o", "--output", default="tilt.html")
@@ -71,7 +75,7 @@ def main(argv=None):
         return server.serve(args.database)
     if args.cmd == "sample" and os.path.exists(args.database):
         os.remove(args.database)  # the example is rebuilt from nothing, never patched
-    conn = graph.open_store(args.database, read_only=args.cmd in ("report", "guard", "view", "ask"))
+    conn = graph.open_store(args.database, read_only=args.cmd in ("report", "guard", "view", "ask", "web"))
     try:
         if args.cmd == "ingest":
             address = args.address.lower()
@@ -128,6 +132,8 @@ def main(argv=None):
             with open(args.output, "w") as fh:
                 fh.write(view.html(conn, args.wallet))
             print(args.output)
+        elif args.cmd == "web":
+            print(json.dumps(web.write(conn, args.out)))
         elif args.cmd == "report":
             row = conn.execute("MATCH (w:Wallet) RETURN w.address AS a LIMIT 1").fetchone()
             print(report.markdown(conn, row["a"] if row else "?", with_queries=args.queries))

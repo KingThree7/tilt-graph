@@ -17,6 +17,11 @@ the tool look that up for a real address.
 - `GO`: no habit with solid evidence applies. This is not a recommendation to trade.
 - `UNKNOWN`: the history or the evidence is too thin. Never turn `UNKNOWN` into `GO`.
 
+The answer also carries `similar_moments`: the positions opened in the most similar situation
+(vector search over `Position.moment`) and how they ended. Say it as a description ("the 200
+closest moments ended like this"), never as a reason for `WAIT` or `GO`. Use `find_question`
+to look up a prepared question by a few words, then `ask` to run it.
+
 Read `evidence.grade` before you speak about a habit:
 
 | Grade starts with | Say |
@@ -34,7 +39,7 @@ Do not call a `weak` habit harmful. In the bundled cohort, trading right after a
 ```
 (:Wallet {address, positions, win_pct, pnl, liquidations, habit})
 (:Position {id, wallet, coin, side, opened_at, closed_at, minutes, pnl, ret, won, max_notional,
-            adds, adds_against, first_add_pct, worst_move_pct, taker_share, liquidated, hour})
+            adds, adds_against, first_add_pct, worst_move_pct, taker_share, liquidated, hour, loss_streak, moment})
 (:Pattern {name, meaning, grade, wallets, compared, win_pts, ret_bps, ret_t, liq_per_1000,
            liq_t, later_ret_bps, later_liq_per_1000, evidence_from})
 (:Verdict {name, positions, win_pct, avg_return_bps, liquidated_per_1000, rule})

@@ -1,4 +1,4 @@
-from tiltgraph import candles, graph, guard, positions, report, sample, study
+from tiltgraph import candles, graph, guard, positions, report, sample, study, web
 
 A = "0xabc0000000"
 
@@ -176,6 +176,49 @@ def test_worst_move_comes_from_prices_seen_while_the_position_was_open():
     assert p.adds_against == 1 and p.ladder[0][3] == 2.0
 
 
+def test_similar_moments_come_from_the_vector_index_and_never_look_ahead(tmp_path):
+    conn = graph.open_store(str(tmp_path / "t.rl"))
+    ps = positions.build_positions(sample.ADDRESS, sample.make_fills())
+    graph.write(conn, sample.ADDRESS, ps)
+    # a planned trade and a past position in the same situation get the same vector
+    assert graph.moment_vector(False, 4, 2.0, True, True, 2, -0.01) == \
+        graph.moment_vector(False, 4, 2.0, True, True, 2, -0.01)
+    assert graph.moment_vector() == [0.0] * graph.MOMENT_DIM
+    stored = conn.execute("MATCH (p:Position) WHERE p.moment IS NOT NULL RETURN count(p) AS n").single()["n"]
+    assert stored == len(ps)
+    now = sorted(p.closed_at for p in ps)[len(ps) // 2]
+    near = guard.similar(conn, now, coin="ETH", side="long", notional=1000)
+    closed = sum(1 for p in ps if p.closed_at <= now)
+    assert 0 < near["all_wallets"]["moments"] <= closed          # filtered inside the index
+    assert near["you"]["moments"] <= 20
+    assert guard.check(conn, now, coin="ETH", side="long")["similar_moments"]["cypher"].count("SEARCH") == 1
+    assert guard.similar(conn, min(p.opened_at for p in ps)) is None
+
+
+def test_prepared_questions_are_found_by_full_text(tmp_path):
+    conn = graph.open_store(str(tmp_path / "t.rl"))
+    graph.write(conn, sample.ADDRESS, positions.build_positions(sample.ADDRESS, sample.make_fills()))
+    rows = [dict(r) for r in conn.execute(
+        "MATCH (q:Question) SEARCH q IN (FULLTEXT INDEX question_text FOR 'waiting after a loss' LIMIT 3) "
+        "SCORE AS score RETURN q.name AS name")]
+    assert rows[0]["name"] == "after_loss_by_gap"
+    assert conn.execute("MATCH (q:Question) RETURN count(q) AS n").single()["n"] == len(report.ALL)
+
+
+def test_the_browser_export_holds_the_whole_graph(tmp_path):
+    import json
+    conn = graph.open_store(str(tmp_path / "t.rl"))
+    graph.write(conn, sample.ADDRESS, positions.build_positions(sample.ADDRESS, sample.make_fills()))
+    stats = web.write(conn, str(tmp_path / "site"))
+    data = json.load(open(tmp_path / "site" / "demo-graph.json"))
+    assert stats["nodes"] == conn.execute("MATCH (n) RETURN count(n) AS n").single()["n"]
+    assert stats["relationships"] == conn.execute("MATCH ()-[r]->() RETURN count(r) AS n").single()["n"]
+    assert len(data["nodes"]["Position"][0]["moment"]) == graph.MOMENT_DIM
+    for q in data["questions"]:                       # every button on the page is valid Cypher here too
+        conn.execute(q["cypher"]).fetchall()
+    assert (tmp_path / "site" / "try.html").exists()
+
+
 def test_the_agent_server_answers_and_cannot_write(tmp_path):
     pytest = __import__("pytest")
     pytest.importorskip("mcp")
@@ -199,11 +242,14 @@ def test_the_agent_server_answers_and_cannot_write(tmp_path):
                 await s.initialize()
                 names = {t.name for t in (await s.list_tools()).tools}
                 check = await s.call_tool("pre_trade_check", {"adding_to_loser": True})
+                found = await s.call_tool("find_question", {"text": "size up after a loss"})
+                assert json.loads(found.content[0].text)["questions"]
                 write = await s.call_tool("read_cypher", {"query": "CREATE (:Hacked)"})
                 return names, check.content[0].text, write.content[0].text
 
     names, check, write = asyncio.run(talk())
-    assert {"pre_trade_check", "habits", "peers", "spirals", "read_cypher"} <= names
+    assert {"pre_trade_check", "habits", "peers", "spirals", "similar_moments", "find_question",
+            "read_cypher"} <= names
     assert json.loads(check)["verdict"] in ("GO", "WAIT", "UNKNOWN")
     assert "error" in json.loads(write)
     conn = graph.open_store(path, read_only=True)

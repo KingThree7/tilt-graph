@@ -12,6 +12,9 @@ Shape of the graph:
   (:Position)-[:AVERAGED_DOWN]->(:Add)-[:THEN]->(:Add)  the ladder of adds against the position
   (:Wallet)-[:HAS_HABIT {positions, share, win_pct, avg_ret, pnl}]->(:Pattern)
   (:Wallet)-[:PEER_OF {score}]->(:Wallet)             nearest wallets by habit vector
+  (:Position {moment})                                the situation it was opened in, as a vector;
+                                                      a vector index finds the most similar moments
+  (:Question {name, title, cypher})                   the prepared questions, under a full-text index
 
 The OPENED_AFTER chain is the point: a number in a table says "you lost".
 The chain says "you lost, and four minutes later you did this".
@@ -54,6 +57,30 @@ STATES = [
     ("calm", "any", 60, None),
 ]
 HABIT_DIM = 8
+MOMENT_DIM = 7
+MOMENT_FEATURES = ["previous result", "how recent", "size against previous", "same coin",
+                   "same or other side", "losses in a row", "previous return"]
+
+
+def moment_vector(prev_won=None, gap_min=None, size_ratio=None, same_coin=False, same_side=False,
+                  streak=0, prev_ret=0.0):
+    """The situation a position is opened in, as seven numbers on a fixed scale.
+
+    Only things that are known at the moment of opening go in, so the same function describes
+    a past position and a trade that is only planned.
+    """
+    if prev_won is None or gap_min is None:
+        return [0.0] * MOMENT_DIM
+    clip = lambda v, lo, hi: max(lo, min(hi, v))
+    return [
+        1.0 if prev_won else -1.0,
+        round(1.0 - clip(math.log10(gap_min + 1.0) / 3.2, 0.0, 1.0), 4),
+        round(clip(math.log2(size_ratio), -2.0, 2.0) / 2.0, 4) if size_ratio and size_ratio > 0 else 0.0,
+        1.0 if same_coin else 0.0,
+        (1.0 if same_side else -1.0) if same_coin else 0.0,
+        min(streak, 5) / 5.0,
+        round(clip((prev_ret or 0.0) * 20.0, -1.0, 1.0), 4),
+    ]
 
 
 def _unpack(path):
@@ -233,11 +260,22 @@ def derive(conn, window=15, size_up=1.5, peers=8, min_positions=20, spiral_gap=3
             % HABIT_DIM)
         cur = conn.execute(
             "MATCH (a:Wallet) WHERE a.habit IS NOT NULL "
-            "CALL db.index.vector.queryNodes('wallet_habit', $k, a.habit) YIELD node, score "
+            "MATCH (node:Wallet) SEARCH node IN (VECTOR INDEX wallet_habit FOR a.habit LIMIT %d) "
+            "SCORE AS score "
             "WITH a, node, score WHERE node <> a "
-            "MERGE (a)-[e:PEER_OF]->(node) SET e.score = round(score, 4) RETURN count(e) AS n",
-            {"k": peers + 1})
+            "MERGE (a)-[e:PEER_OF]->(node) SET e.score = round(score, 4) RETURN count(e) AS n"
+            % (peers + 1))
         linked = cur.single()["n"]
+
+    # 4b. The moment each position was opened in, as a vector, and an index to find similar ones.
+    moments = _moment_vectors(conn)
+
+    # 4c. The prepared questions live in the graph too, under a full-text index.
+    from . import report
+    conn.execute("MATCH (q:Question) WHERE NOT q.name IN $names DETACH DELETE q", {"names": list(report.ALL)})
+    conn.execute("UNWIND $rows AS r MERGE (q:Question {name: r.name}) SET q.title = r.title, q.cypher = r.cypher",
+                 {"rows": [{"name": k, "title": v[0], "cypher": v[1].strip()} for k, v in report.ALL.items()]})
+    conn.execute("CREATE FULLTEXT INDEX question_text IF NOT EXISTS FOR (q:Question) ON EACH [q.title]")
     conn.commit()
 
     # 5. Evidence: with enough wallets, test the patterns here. Otherwise use the bundled study.
@@ -251,7 +289,33 @@ def derive(conn, window=15, size_up=1.5, peers=8, min_positions=20, spiral_gap=3
     else:
         source = study.apply_bundled(conn) or "none"
     conn.commit()
-    return {"wallets_with_habit": made, "peer_links": linked, "evidence": source}
+    return {"wallets_with_habit": made, "peer_links": linked, "moments": moments, "evidence": source}
+
+
+def _moment_vectors(conn):
+    rows = [dict(r) for r in conn.execute(
+        "MATCH (p:Position) OPTIONAL MATCH (p)-[r:OPENED_AFTER]->(prev:Position) "
+        "RETURN p.id AS id, p.opened_at AS at, p.coin AS coin, p.side AS side, prev.id AS prev, "
+        "prev.won AS won, prev.coin AS pcoin, prev.side AS pside, prev.ret AS pret, "
+        "r.gap_min AS gap, r.size_ratio AS ratio, "
+        "EXISTS { (p)-[:TILTED_FROM]->(prev) } AS tilted")]
+    rows.sort(key=lambda r: r["at"])
+    streak, payload = {}, []
+    for r in rows:
+        n = streak.get(r["prev"], 0) + 1 if r["tilted"] else 0
+        streak[r["id"]] = n
+        payload.append({"id": r["id"], "n": n, "v": moment_vector(
+            r["won"], r["gap"], r["ratio"], r["coin"] == r["pcoin"], r["side"] == r["pside"], n, r["pret"])})
+    for i in range(0, len(payload), 1000):
+        conn.execute("UNWIND $rows AS r MATCH (p:Position {id: r.id}) "
+                     "SET p.loss_streak = r.n, p.moment = vector(r.v, %d, FLOAT32)" % MOMENT_DIM,
+                     {"rows": payload[i:i + 1000]})
+    conn.execute(
+        "CREATE VECTOR INDEX position_moment IF NOT EXISTS FOR (p:Position) ON (p.moment) "
+        "WITH [p.wallet, p.closed_at] "
+        "OPTIONS {indexConfig: {`vector.dimensions`: %d, `vector.similarity_function`: 'euclidean'}}"
+        % MOMENT_DIM)
+    return len(payload)
 
 
 FEATURES = ["quick_after_loss", "size_after_loss", "flip", "chase",

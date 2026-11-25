@@ -19,13 +19,15 @@ links every position to what had just happened before it, and keeps everything i
 
 Entry for the [Relate by Neo4j Hackathon](https://relate.devpost.com/).
 
-**Live page:** https://kingthree7.github.io/tilt-graph/ · **Demo video (2 minutes):** https://youtu.be/JKPry4AxsOo
+**Live page:** https://kingthree7.github.io/tilt-graph/ · **Ask the graph in your browser:** https://kingthree7.github.io/tilt-graph/try.html · **Demo video (2 minutes):** https://youtu.be/JKPry4AxsOo
 
 ![The view](docs/report.png)
 
 ## How it uses Relate
 
-- **Mode: single file** (`.rl`), embedded in the Python process.
+- **Mode: single file** (`.rl`), embedded in the Python process. The same graph also runs
+  **in the browser** (Relate compiled to WebAssembly) on the
+  [try page](https://kingthree7.github.io/tilt-graph/try.html), with the same Cypher.
 - **Why this mode:** a trading journal is private and should be one thing you can copy, back up
   or delete. Nothing is deployed, nothing leaves the machine except the request for public
   fills, and an agent opens the same file read-only.
@@ -46,6 +48,8 @@ that matter here are about what is connected to what:
 (:Wallet)-[:HAS_HABIT {positions, win_pct, pnl}]->(:Pattern)
 (:Wallet)-[:PEER_OF {score}]->(:Wallet)                           nearest by habit vector
 (:Position)-[:GUARD_SAID {because}]->(:Verdict)                   the advice, next to the outcome
+(:Position {moment})                                              the situation at the open, as a vector
+(:Question {name, title, cypher})                                 the prepared questions, full-text indexed
 ```
 
 What Relate does for us that a table would not:
@@ -53,8 +57,8 @@ What Relate does for us that a table would not:
 - **The guard is a walk, not a model.** One check goes wallet → last closed position → the
   habit the planned trade would be → the evidence on that habit → how it went for this wallet
   → how it went for its peers → the chain of losses it may already be in → how the advice
-  itself did. That is seven hops through connected context, and each one is a line of Cypher
-  that is returned with the answer.
+  itself did → the most similar moments in the store. That is eight steps through connected
+  context, and each one is a line of Cypher that is returned with the answer.
 - **Spirals are paths.** A loss chain is `(last)-[:TILTED_FROM]->*(first)`. One quantified
   path pattern finds chains of any length.
 - **Ladders are paths too.** Each add under water is a node, linked in order, so "how deep did
@@ -62,6 +66,15 @@ What Relate does for us that a table would not:
 - **Peers come from vector search inside the same file.** Every wallet has an 8-number habit
   vector; a Relate vector index finds the nearest wallets, and the result is written back as
   `PEER_OF` edges. Similarity and structure are queried together in one statement.
+- **Similar moments come from a second vector index.** Every position carries seven numbers
+  that describe the moment it was opened in (what had just closed, how long ago, size against
+  it, same coin and side, losses in a row). One statement finds the nearest moments with
+  `SEARCH p IN (VECTOR INDEX position_moment FOR $v WHERE p.closed_at <= $now LIMIT 200)`, so
+  the filter runs inside the index and nothing from the future leaks in, and then walks on to
+  the habits those positions showed. The guard reports this as a description and never turns
+  it into a verdict.
+- **The questions are data too.** The prepared questions are `Question` nodes under a
+  full-text index, so an agent finds the right one with a few words.
 - **Evidence and audit live in the graph.** Grades sit on `Pattern` nodes and replayed advice
   on `GUARD_SAID` edges, so the tool's claims are data that can be queried, not text in a README.
 - **Embedded and one file.** A trading journal is private. Nothing is deployed, nothing leaves
@@ -96,6 +109,13 @@ reliable change in average return (-21 basis points). More small wins, more blow
 this 34 times: total result -2387.11.
 ```
 
+The same answer also carries `similar_moments`: the positions in the store that were opened in
+the most similar situation, and how those ended.
+
+The browser page is built from the example store with `tiltgraph web -d examples/demo.rl -o docs`.
+It exports the graph as JSON and loads it into Relate WebAssembly; open `docs/try.html` through
+any static server (`python -m http.server -d docs`).
+
 With your own address (fills on Hyperliquid are public):
 
 ```bash
@@ -121,6 +141,8 @@ tiltgraph serve -d examples/cohort.rl      # MCP over stdio, the store is opened
 | `habits` | which habits a wallet has and what they did for it |
 | `peers` | the wallets that behave most like it (vector search over habit vectors) and how they ended |
 | `spirals` | its worst chains of losses |
+| `similar_moments` | the moments most like this one (vector search over `Position.moment`) and how they ended, for all wallets and for this wallet |
+| `find_question` | the prepared question that fits a few words (full-text search) |
 | `ask`, `schema`, `read_cypher` | prepared questions, the shape of the graph, and free read-only Cypher |
 
 [`examples/order_gate.py`](examples/order_gate.py) is the smallest useful agent: it runs the
@@ -133,8 +155,9 @@ check and holds the order back unless the answer is `GO`. It never places an ord
 |---|---|---|
 | Example trader | `examples/demo.rl` | one made-up trader, 137 positions, opens directly |
 | Cohort | `examples/cohort.rl.gz` | 657 real wallets under aliases, 60,156 positions. Gzipped because it is 82 MB unpacked; any `tiltgraph` command unpacks it to `examples/cohort.rl` on first use, or run `gunzip -k examples/cohort.rl.gz` |
+| Browser copy | `docs/demo-graph.json` | the example trader exported for the WebAssembly page, 256 nodes and 792 relationships |
 
-Both are Relate single-file stores. Open them read-only with `relate.connect(path, read_only=True)`
+The first two are Relate single-file stores. Open them read-only with `relate.connect(path, read_only=True)`
 or through `tiltgraph serve`.
 
 ## What the data said
@@ -215,10 +238,11 @@ aliases. The addresses are not in the store. The draw is random, not a list of w
 pip install -e ".[test,mcp]" && pytest
 ```
 
-Fifteen tests: folding fills into positions (adds, reversals inside one fill, positions that
+Eighteen tests: folding fills into positions (adds, reversals inside one fill, positions that
 began before the window, spot fills), adds under water and their ladders, idempotent writes,
 `OPENED_AFTER` always pointing at the right position, the planted habits found again, the
-decision-point test, the three verdicts, and the MCP server refusing to write.
+decision-point test, the three verdicts, similar moments from the vector index without looking
+ahead, full-text search over the questions, the export for the browser page, and the MCP server refusing to write.
 
 ## Limits
 
@@ -234,7 +258,7 @@ decision-point test, the three verdicts, and the MCP server refusing to write.
 
 ## How it was built
 
-Built for the hackathon, started on 22 November 2026. Tools: Relate 1.2.0 (`relate-db`), the
+Built for the hackathon, started on 22 November 2026. Tools: Relate 1.2.0 (`relate-db` and `@relate/relate-wasm`), the
 Python standard library, the public Hyperliquid info API, the MCP Python SDK, pytest.
 **AI use:** the code, tests and this README were written with Claude (Anthropic) as a coding
 assistant, directed and reviewed by the author. Every number above comes from running the code
