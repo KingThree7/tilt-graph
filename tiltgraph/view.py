@@ -82,7 +82,7 @@ def html(conn, wallet=None):
              "<p class='lead'>A trading journal kept as a graph. It links every position to what came before "
              "it, tests which habits really cost money, and checks its own advice against what happened next.</p>",
              "<p class='lead'><a href='https://github.com/KingThree7/tilt-graph'>Code on GitHub</a> · "
-             "<a href='https://youtu.be/JKPry4AxsOo'>2-minute video</a> · <a href='https://kingthree7.github.io/tilt-graph/try.html'>ask the graph in your browser</a> · every number on this page is "
+             "<a href='https://youtu.be/t0_L_ErBwH4'>2-minute video</a> · <a href='https://kingthree7.github.io/tilt-graph/try.html'>ask the graph in your browser</a> · every number on this page is "
              "read from one Relate file with Cypher.</p>",
              "<div class='cards'>"
              f"<div class='card'><b>{size['wallets']:,}</b><span>wallet{'s' if many else ''}</span></div>"

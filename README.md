@@ -19,7 +19,7 @@ links every position to what had just happened before it, and keeps everything i
 
 Entry for the [Relate by Neo4j Hackathon](https://relate.devpost.com/).
 
-**Live page:** https://kingthree7.github.io/tilt-graph/ · **Ask the graph in your browser:** https://kingthree7.github.io/tilt-graph/try.html · **Demo video (2 minutes):** https://youtu.be/JKPry4AxsOo
+**Live page:** https://kingthree7.github.io/tilt-graph/ · **Ask the graph in your browser:** https://kingthree7.github.io/tilt-graph/try.html · **Demo video (2 minutes):** https://youtu.be/t0_L_ErBwH4
 
 ![The view](docs/report.png)
 
