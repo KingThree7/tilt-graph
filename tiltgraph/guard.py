@@ -7,7 +7,8 @@ The guard never predicts a price. It walks the graph:
                                                or adding to a position that is under water
   3. Pattern.grade                             what the evidence says about that habit: tested
                                                wallet by wallet, and again on later data
-  4. wallet -> HAS_HABIT -> Pattern            how it went the times this wallet did it
+  4. wallet -> TRADED -> SHOWS -> Pattern      how it went the times this wallet did it,
+                                               counting only what was closed by then
   5. wallet -> PEER_OF -> HAS_HABIT            and for the traders who behave most like it
   6. last position -> TILTED_FROM chain        am I already inside a loss spiral
   7. Verdict nodes                             how the guard's own advice did on data it had
@@ -60,12 +61,15 @@ ORDER BY length(path) DESC LIMIT 1
 """
 HABIT_Q = """
 MATCH (x:Pattern {name: $p})
-OPTIONAL MATCH (w:Wallet {address: $w})-[h:HAS_HABIT]->(x)
+OPTIONAL MATCH (:Wallet {address: $w})-[:TRADED]->(mine:Position)-[:SHOWS]->(x)
+  WHERE mine.closed_at <= $now
+WITH x, count(mine) AS n, sum(CASE WHEN mine.won THEN 1 ELSE 0 END) AS wins, sum(mine.pnl) AS pnl
 RETURN x.meaning AS meaning, x.grade AS grade, x.wallets AS wallets, x.compared AS compared,
        x.win_pts AS win_pts, x.ret_bps AS ret_bps, x.ret_t AS ret_t,
        x.liq_per_1000 AS liq_per_1000, x.liq_t AS liq_t, x.later_ret_bps AS later_ret_bps,
        x.later_liq_per_1000 AS later_liq_per_1000, x.evidence_from AS evidence_from,
-       h.positions AS n, h.win_pct AS win_pct, h.pnl AS pnl, h.share AS share
+       n, CASE WHEN n > 0 THEN round(100.0 * wins / n, 1) END AS win_pct,
+       CASE WHEN n > 0 THEN round(pnl, 2) END AS pnl
 """
 PEER_HABIT_Q = """
 MATCH (:Wallet {address: $w})-[:PEER_OF]->(peer:Wallet)
@@ -169,7 +173,7 @@ def check(conn, now_ms, wallet=None, coin=None, side=None, notional=None,
 
     matches, solid, untested = [], [], []
     for name in flags:
-        h = conn.execute(HABIT_Q, {"w": wallet, "p": name}).fetchone()
+        h = conn.execute(HABIT_Q, {"w": wallet, "p": name, "now": now_ms}).fetchone()
         if h is None:
             continue
         peer = conn.execute(PEER_HABIT_Q, {"w": wallet, "p": name}).fetchone()
@@ -249,7 +253,7 @@ def check(conn, now_ms, wallet=None, coin=None, side=None, notional=None,
         out["guard_track_record"] = {
             "what": "verdicts replayed on the later half of every wallet, rule learned on the first half",
             "rows": track}
-    out["evidence_cypher"] = {"query": HABIT_Q.strip(), "params": {"w": wallet, "p": flags[0] if flags else None}}
+    out["evidence_cypher"] = {"query": HABIT_Q.strip(), "params": {"w": wallet, "p": flags[0] if flags else None, "now": now_ms}}
     return out
 
 

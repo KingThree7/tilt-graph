@@ -105,8 +105,7 @@ The last command answers:
 WAIT: This trade would be 'average_down': Added to the position while it was at least 1% under
 water. Tested on 1122 wallets, against the same wallet's positions that were equally far under
 water and were not added to: +54 liquidations per 1,000 positions (+63 on later data), with no
-reliable change in average return (+9 basis points). More small wins, more blow-ups. You did
-this 34 times: total result -2387.11.
+reliable change in average return (+9 basis points). More small wins, more blow-ups.
 ```
 
 The same answer also carries `similar_moments`: the positions in the store that were opened in
@@ -144,6 +143,11 @@ tiltgraph serve -d examples/cohort.rl      # MCP over stdio, the store is opened
 | `similar_moments` | the moments most like this one (vector search over `Position.moment`) and how they ended, for all wallets and for this wallet |
 | `find_question` | the prepared question that fits a few words (full-text search) |
 | `ask`, `schema`, `read_cypher` | prepared questions, the shape of the graph, and free read-only Cypher |
+
+[`examples/agent-session.md`](examples/agent-session.md) is a real session: an agent checks an
+add to a losing position on the cohort store, holds the order back, and then asks the graph how
+it ended. [`examples/mcp_call.py`](examples/mcp_call.py) is the client it used, one tool call per
+command.
 
 [`examples/order_gate.py`](examples/order_gate.py) is the smallest useful agent: it runs the
 check and holds the order back unless the answer is `GO`. It never places an order.
