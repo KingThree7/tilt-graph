@@ -20,6 +20,7 @@ The OPENED_AFTER chain is the point: a number in a table says "you lost".
 The chain says "you lost, and four minutes later you did this".
 """
 import gzip
+import lzma
 import os
 import shutil
 import datetime as dt
@@ -84,12 +85,16 @@ def moment_vector(prev_won=None, gap_min=None, size_ratio=None, same_coin=False,
 
 
 def _unpack(path):
-    """The cohort store ships gzipped. Unpack it next to the archive the first time it is asked for."""
+    """The cohort store ships packed. Unpack it next to the archive the first time it is asked for."""
     path = str(path)
-    if not os.path.exists(path) and os.path.exists(path + ".gz"):
-        with gzip.open(path + ".gz", "rb") as src, open(path + ".part", "wb") as dst:
-            shutil.copyfileobj(src, dst)
-        os.replace(path + ".part", path)
+    if os.path.exists(path):
+        return path
+    for ext, opener in ((".xz", lzma.open), (".gz", gzip.open)):
+        if os.path.exists(path + ext):
+            with opener(path + ext, "rb") as src, open(path + ".part", "wb") as dst:
+                shutil.copyfileobj(src, dst, 1 << 22)
+            os.replace(path + ".part", path)
+            break
     return path
 
 
@@ -324,9 +329,8 @@ FEATURES = ["quick_after_loss", "size_after_loss", "flip", "chase",
 
 def _habit_vectors(conn, min_positions):
     """Eight numbers that describe how a wallet behaves, z-scored across the store."""
-    rows = [dict(r) for r in conn.execute(
-        """
-        MATCH (w:Wallet)-[:TRADED]->(p:Position)
+    query = """
+        MATCH (w:Wallet)-[:TRADED]->(p:Position) WHERE w.address IN $ws
         OPTIONAL MATCH (p)-[r:OPENED_AFTER]->(prev:Position)
         WITH w, p, r, prev,
              CASE WHEN prev IS NOT NULL AND NOT prev.won AND r.gap_min < 15 THEN 1.0 ELSE 0.0 END AS qal,
@@ -343,7 +347,11 @@ def _habit_vectors(conn, min_positions):
                avg(log10(p.minutes + 1.0)) AS hold_log,
                avg(CASE WHEN p.adds_against >= 1 THEN 1.0 ELSE 0.0 END) AS average_down,
                (max(p.opened_at) - min(p.opened_at)) / 86400000.0 AS days
-        """)]
+        """
+    wallets = [r["a"] for r in conn.execute("MATCH (w:Wallet) RETURN w.address AS a")]
+    rows = []
+    for i in range(0, len(wallets), 100):  # in pieces: one statement over a large cohort is too big
+        rows += [dict(r) for r in conn.execute(query, {"ws": wallets[i:i + 100]})]
     rows = [r for r in rows if r["n"] >= min_positions]
     for r in rows:
         r["size_after_loss"] = r["size_after_loss"] if r["size_after_loss"] is not None else 1.0

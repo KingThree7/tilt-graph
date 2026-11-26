@@ -35,10 +35,10 @@ RETURN count(p) AS moments, count(DISTINCT p.wallet) AS wallets,
        round(100.0 * count(x) / count(p), 1) AS later_added_under_water_pct,
        round(min(score), 3) AS least_similar_score
 """
+# The wallet's own nearest moments: a walk to its positions, ranked by the same distance.
 SIMILAR_OWN_Q = """
-MATCH (p:Position)
-SEARCH p IN (VECTOR INDEX position_moment FOR $v WHERE p.wallet = $w AND p.closed_at <= $now LIMIT 20)
-SCORE AS score
+MATCH (:Wallet {address: $w})-[:TRADED]->(p:Position) WHERE p.closed_at <= $now
+WITH p, vector.similarity.euclidean(p.moment, $v) AS score ORDER BY score DESC LIMIT 20
 RETURN count(p) AS moments,
        round(100.0 * sum(CASE WHEN p.won THEN 1 ELSE 0 END) / count(p), 1) AS win_pct,
        round(avg(p.ret) * 10000, 0) AS avg_return_bps, round(sum(p.pnl), 2) AS total_pnl,

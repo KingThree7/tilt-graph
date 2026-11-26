@@ -22,7 +22,7 @@ import math
 import os
 
 ROWS_Q = """
-MATCH (p:Position)
+MATCH (w:Wallet)-[:TRADED]->(p:Position) WHERE w.address IN $ws
 OPTIONAL MATCH (p)-[:SHOWS]->(x:Pattern)
 RETURN p.id AS id, p.wallet AS wallet, p.opened_at AS opened_at, p.won AS won, p.ret AS ret,
        p.liquidated AS liquidated, p.pnl AS pnl, p.worst_move_pct AS worst,
@@ -57,8 +57,10 @@ def _clip(x):
 
 def load(conn):
     by_wallet = {}
-    for r in conn.execute(ROWS_Q):
-        by_wallet.setdefault(r["wallet"], []).append(dict(r))
+    wallets = [r["a"] for r in conn.execute("MATCH (w:Wallet) RETURN w.address AS a")]
+    for i in range(0, len(wallets), 100):  # in pieces, so a large cohort stays one small read each
+        for r in conn.execute(ROWS_Q, {"ws": wallets[i:i + 100]}):
+            by_wallet.setdefault(r["wallet"], []).append(dict(r))
     for rows in by_wallet.values():
         rows.sort(key=lambda r: r["opened_at"])
     return by_wallet
@@ -186,11 +188,13 @@ def audit(conn):
         first = effect(by_wallet, name, "first")
         if first and (first["ret_t"] <= -3 or first["liq_t"] >= 3):
             rule.append(name)
-    said = {}
+    said, per_rule = {}, {name: ([], []) for name in rule}
     for rows in by_wallet.values():
         later = rows[len(rows) // 2:]
         for name in rule:
             yes, no = split(later, name)
+            per_rule[name][0].extend(yes)
+            per_rule[name][1].extend(no)
             for r in no:
                 said.setdefault(r["id"], ("GO", ""))
             for r in yes:
@@ -210,7 +214,15 @@ def audit(conn):
                      {"n": r["guard_said"], "p": r["positions"], "w": r["win_pct"],
                       "r": r["avg_return_bps"], "l": r["liquidated_per_1000"], "rule": ", ".join(rule)})
     conn.commit()
-    return {"rule_learned_on_first_half": rule, "result_on_second_half": result}
+    by_rule = []
+    for name in rule:  # the same replay, one rule at a time, each against its own comparison
+        for said_, rows in (("WAIT", per_rule[name][0]), ("GO", per_rule[name][1])):
+            if rows:
+                by_rule.append({"rule": name, "guard_said": said_, "positions": len(rows),
+                                "win_pct": round(100 * _mean([r["won"] for r in rows]), 1),
+                                "avg_return_bps": round(1e4 * _mean([_clip(r["ret"]) for r in rows]), 1),
+                                "liquidated_per_1000": round(1000 * _mean([r["liquidated"] for r in rows]), 1)})
+    return {"rule_learned_on_first_half": rule, "result_on_second_half": result, "by_rule": by_rule}
 
 
 AUDIT_Q = """

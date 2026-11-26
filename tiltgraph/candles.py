@@ -25,22 +25,33 @@ def fetch(coins, start_ms, folder, pause=0.6, log=None):
         path = _file(folder, coin)
         if os.path.exists(path):
             continue
-        rows, cursor = [], start_ms
         try:
-            for _ in range(6):
-                page = hl._post({"type": "candleSnapshot", "req": {
-                    "coin": coin, "interval": INTERVAL, "startTime": cursor, "endTime": end}}) or []
-                time.sleep(pause)
-                rows += [[c["t"], float(c["h"]), float(c["l"])] for c in page]
-                if len(page) < 4900:
-                    break
-                cursor = page[-1]["t"] + 1
+            rows = _candles(coin, INTERVAL, start_ms, end, pause)
+            # The venue keeps only the latest 5,000 candles of an interval (52 days at 15 minutes).
+            # Older than that, fall back to hourly candles so the whole window is covered.
+            first = rows[0][0] if rows else end
+            if first - start_ms > 86400_000:
+                rows = [r for r in _candles(coin, "1h", start_ms, first, pause)
+                        if r[0] + 3600_000 <= first] + rows
         except Exception as err:  # a coin without candles must not stop the run
             if log:
                 log(f"{coin}: {err}")
             continue
         with open(path, "w") as fh:
             json.dump(rows, fh)
+
+
+def _candles(coin, interval, start_ms, end_ms, pause):
+    rows, cursor = [], start_ms
+    for _ in range(6):
+        page = hl._post({"type": "candleSnapshot", "req": {
+            "coin": coin, "interval": interval, "startTime": cursor, "endTime": end_ms}}) or []
+        time.sleep(pause)
+        rows += [[c["t"], float(c["h"]), float(c["l"])] for c in page]
+        if len(page) < 4900 or page[-1]["t"] + 1 <= cursor:
+            break
+        cursor = page[-1]["t"] + 1
+    return sorted(rows)
 
 
 def load(folder):

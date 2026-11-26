@@ -49,7 +49,7 @@ def main(argv=None):
     c = sub.add_parser("cohort", help="build a store of many public wallets (aliases only)")
     c.add_argument("-d", "--database", default="cohort.rl")
     c.add_argument("--wallets", type=int, default=300)
-    c.add_argument("--days", type=int, default=60)
+    c.add_argument("--days", type=int, default=120)
     c.add_argument("--cache", default=".tilt-cache", help="folder for downloaded fills")
     c.add_argument("--seed", type=int, default=11)
 
@@ -113,14 +113,18 @@ def main(argv=None):
             print(report.table(study.under_water(conn)))
             print("Rule learned on the first half of every wallet:", audit["rule_learned_on_first_half"])
             print(report.table(audit["result_on_second_half"]))
+            print(report.table(audit["by_rule"]))
         elif args.cmd == "cohort":
             import secrets
             addresses = cohort.pick(cohort.leaderboard(), args.wallets, seed=args.seed)
             start = int((time.time() - args.days * 86400) * 1000)
             fills_dir, candle_dir = os.path.join(args.cache, "fills"), os.path.join(args.cache, "candles")
-            cohort.fetch(addresses, start, fills_dir, log=lambda m: print(m, file=sys.stderr))
-            candles.fetch(cohort.coins(fills_dir), start, candle_dir)
-            stats = cohort.build(conn, fills_dir, secrets.token_hex(8), candle_dir=candle_dir)
+            # more than about 90 fills a day over the whole window is a machine, not a person;
+            # the venue serves at most the latest 10,000 fills of a wallet
+            max_fills = min(9900, round(5500 * args.days / 60))
+            cohort.fetch(addresses, start, fills_dir, max_pages=6, log=lambda m: print(m, file=sys.stderr))
+            candles.fetch(cohort.coins(fills_dir, max_fills=max_fills), start, candle_dir)
+            stats = cohort.build(conn, fills_dir, secrets.token_hex(8), max_fills=max_fills, candle_dir=candle_dir)
             print(json.dumps({**stats, "store": args.database}))
         elif args.cmd == "sample":
             fills = sample.make_fills()
